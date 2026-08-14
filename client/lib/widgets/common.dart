@@ -70,14 +70,15 @@ class ScoreMeter extends StatelessWidget {
 }
 
 class DebtBadge extends StatelessWidget {
-  const DebtBadge(this.count, {super.key});
+  const DebtBadge(this.count, {this.pending = false, super.key});
 
   final int count;
+  final bool pending;
 
   @override
   Widget build(BuildContext context) => DecoratedBox(
     decoration: BoxDecoration(
-      color: count == 0
+      color: count == 0 && !pending
           ? moss.withValues(alpha: .12)
           : debtRed.withValues(alpha: .12),
       borderRadius: BorderRadius.circular(20),
@@ -85,9 +86,13 @@ class DebtBadge extends StatelessWidget {
     child: Padding(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       child: Text(
-        count == 0 ? '已清零' : '$count 项债务',
+        pending
+            ? '待分析'
+            : count == 0
+            ? '已清零'
+            : '$count 项债务',
         style: TextStyle(
-          color: count == 0 ? moss : debtRed,
+          color: count == 0 && !pending ? moss : debtRed,
           fontWeight: FontWeight.w700,
           fontSize: 12,
         ),

@@ -157,3 +157,6 @@ def test_external_upload_requires_explicit_consent(tmp_path: Path):
     session = client.post(f"/courses/{course['id']}/sessions", json={"title": "Lecture 1"}).json()
     response = client.post(f"/sessions/{session['id']}/analyze", json={"confirm_external_upload": False})
     assert response.status_code == 409
+    home = client.get("/home").json()
+    assert home["pending_session_count"] == 1
+    assert home["minimum_minutes"] == 5

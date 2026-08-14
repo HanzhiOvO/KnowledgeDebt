@@ -8,7 +8,7 @@ import httpx
 from pydantic import BaseModel
 
 from ..models import EvaluationResult, QuestionDraft, ReconstructionDraft, RemediationDraft, TranscriptSegment
-from .base import ProviderNotConfigured
+from .base import ProviderNotConfigured, ProviderRequestError
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -53,7 +53,13 @@ class OpenAICompatibleProvider:
         }
         async with httpx.AsyncClient(timeout=180) as client:
             response = await client.post(f"{self.base_url}/chat/completions", headers=self._headers(), json=body)
-            response.raise_for_status()
+            if response.status_code == 400:
+                fallback = {**body, "response_format": {"type": "json_object"}}
+                response = await client.post(
+                    f"{self.base_url}/chat/completions", headers=self._headers(), json=fallback
+                )
+            if not response.is_success:
+                raise ProviderRequestError(f"AI provider returned HTTP {response.status_code}")
             payload = response.json()
         content = payload["choices"][0]["message"]["content"]
         if isinstance(content, list):
@@ -131,7 +137,8 @@ JSON schema: {json.dumps(RemediationDraft.model_json_schema(), ensure_ascii=Fals
                 data={"model": self.asr_model, "response_format": "verbose_json"},
                 files={"file": (file_path.name, handle, mime_type or "application/octet-stream")},
             )
-            response.raise_for_status()
+            if not response.is_success:
+                raise ProviderRequestError(f"ASR provider returned HTTP {response.status_code}")
             payload: dict[str, Any] = response.json()
         segments = payload.get("segments") or []
         if not segments:

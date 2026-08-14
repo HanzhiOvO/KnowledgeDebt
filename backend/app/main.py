@@ -25,7 +25,13 @@ from .models import (
     SessionCreate,
     TranscriptionRequest,
 )
-from .providers.base import AIProvider, ProviderNotConfigured, TranscriptionProvider
+from .providers.base import (
+    AIProvider,
+    ProviderNotConfigured,
+    ProviderOutputError,
+    ProviderRequestError,
+    TranscriptionProvider,
+)
 from .providers.openai_compatible import OpenAICompatibleProvider
 from .scoring import minimum_daily_minutes
 from .service import KnowledgeService
@@ -98,6 +104,13 @@ def create_app(
         from fastapi.responses import JSONResponse
 
         return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+    @app.exception_handler(ProviderRequestError)
+    @app.exception_handler(ProviderOutputError)
+    async def provider_failure_handler(_, exc: RuntimeError):
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(status_code=502, content={"detail": str(exc)})
 
     @app.get("/health")
     def health() -> dict:
@@ -232,7 +245,11 @@ def create_app(
     @app.post("/sessions/{session_id}/assessment", status_code=201)
     async def generate_assessment(session_id: str, payload: AnalysisRequest) -> list[dict]:
         _permission(payload.confirm_external_upload, service.ai)
-        return await service.make_quiz(session_id)
+        questions = await service.make_quiz(session_id)
+        for question in questions:
+            question.pop("reference_answer", None)
+            question.pop("rubric", None)
+        return questions
 
     @app.get("/sessions/{session_id}/assessment")
     def list_assessment(session_id: str) -> list[dict]:
@@ -280,11 +297,14 @@ def create_app(
                 }
             )
         open_debts = [item for item in all_debts if item["status"] != "mastered"]
+        pending_sessions = [item for item in sessions if item["status"] != "complete"]
+        unanalyzed_sessions = [item for item in pending_sessions if not debts_by_session.get(item["id"])]
         return {
             "sessions": session_cards,
             "open_debt_count": len(open_debts),
             "urgent_debt_count": sum(item["priority"] >= 4 for item in open_debts),
-            "minimum_minutes": minimum_daily_minutes(open_debts),
+            "pending_session_count": len(pending_sessions),
+            "minimum_minutes": minimum_daily_minutes(open_debts) + len(unanalyzed_sessions) * 5,
         }
 
     return app

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .database import Database
-from .providers.base import AIProvider, TranscriptionProvider
+from .providers.base import AIProvider, ProviderOutputError, TranscriptionProvider
 from .scoring import debt_status, learning_coverage, reconstruction_score, update_mastery
 
 
@@ -24,7 +24,9 @@ class KnowledgeService:
         session = self.db.get_session(session_id)
         evidence = session["resources"]
         result = await self.ai.analyze_session(session, evidence)
-        self.db.save_analysis(session_id, result.model_dump(mode="json"))
+        payload = result.model_dump(mode="json")
+        self._validate_source_ids(payload, evidence)
+        self.db.save_analysis(session_id, payload)
         self.refresh_scores(session_id)
         return self.db.get_session(session_id)
 
@@ -34,6 +36,12 @@ class KnowledgeService:
         if not points:
             raise ValueError("Analyze the session before generating an assessment")
         questions = await self.ai.generate_questions(session, session["resources"], points)
+        allowed_points = {point["title"]: point["expected_mastery"] for point in points}
+        for question in questions:
+            expected = allowed_points.get(question.knowledge_point_title)
+            if expected is None or question.expected_mastery_level > expected:
+                raise ProviderOutputError("Provider returned an out-of-scope assessment question")
+        self._validate_source_ids([q.model_dump(mode="json") for q in questions], session["resources"])
         return self.db.replace_questions(session_id, [q.model_dump(mode="json") for q in questions])
 
     async def evaluate(self, question_id: str, answer: str) -> dict:
@@ -51,4 +59,21 @@ class KnowledgeService:
         point = self.db.get_knowledge_point(point_id)
         session = self.db.get_session(point["source_session_id"])
         draft = await self.ai.remediate(point, reason, session["resources"])
+        self._validate_source_ids(draft.model_dump(mode="json"), session["resources"])
         return self.db.save_remediation(point_id, reason, draft.model_dump(mode="json"))
+
+    @staticmethod
+    def _validate_source_ids(payload: object, evidence: list[dict]) -> None:
+        allowed = {item["id"] for item in evidence}
+
+        def visit(value: object) -> None:
+            if isinstance(value, dict):
+                if "resource_id" in value and value["resource_id"] not in allowed:
+                    raise ProviderOutputError("Provider returned a source reference that was not supplied")
+                for child in value.values():
+                    visit(child)
+            elif isinstance(value, list):
+                for child in value:
+                    visit(child)
+
+        visit(payload)

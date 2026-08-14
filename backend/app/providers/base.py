@@ -9,6 +9,14 @@ class ProviderNotConfigured(RuntimeError):
     pass
 
 
+class ProviderRequestError(RuntimeError):
+    pass
+
+
+class ProviderOutputError(RuntimeError):
+    pass
+
+
 class AIProvider(Protocol):
     requires_external_upload: bool
 

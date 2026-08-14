@@ -74,8 +74,8 @@ class _DebtOverview extends StatelessWidget {
           children: [
             Expanded(
               child: _Stat(
-                value: '${home['open_debt_count'] ?? 0}',
-                label: '当前债务',
+                value: '${home['pending_session_count'] ?? 0}',
+                label: '待补 Session',
               ),
             ),
             Expanded(
@@ -156,7 +156,10 @@ class _SessionCard extends StatelessWidget {
                       ],
                     ),
                   ),
-                  DebtBadge(debts),
+                  DebtBadge(
+                    debts,
+                    pending: session['status'] != 'complete' && debts == 0,
+                  ),
                 ],
               ),
               const SizedBox(height: 20),
