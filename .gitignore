@@ -1,0 +1,39 @@
+# Secrets and local data
+.env
+.env.*
+!.env.example
+data/
+**/data/
+*.sqlite3
+*.db
+*.wav
+*.m4a
+*.mp3
+*.mp4
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+coverage/
+**/GeneratedPluginRegistrant.*
+client/android/.gradle/
+client/android/local.properties
+client/ios/Flutter/ephemeral/
+client/macos/Flutter/ephemeral/
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+*.iml
+
