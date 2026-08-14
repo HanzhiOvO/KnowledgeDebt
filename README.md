@@ -69,6 +69,14 @@ flowchart LR
 
 The backend stores structured domain objects, not one large Markdown result. See [`backend/app/database.py`](backend/app/database.py) for the schema and [`backend/app/providers/base.py`](backend/app/providers/base.py) for provider contracts.
 
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/android-onboarding.png" width="30%" alt="KnowledgeDebt onboarding">
+  <img src="docs/screenshots/android-home.png" width="30%" alt="Debt-first home">
+  <img src="docs/screenshots/android-session-detail.png" width="30%" alt="Course Session detail">
+</p>
+
 ## Getting started
 
 Requirements:
@@ -137,6 +145,16 @@ Course → Session → Resource → Reconstruction → Knowledge Point → Debt
 → targeted remediation → Question → semantic evaluation → Mastery → Session complete
 ```
 
+Local verification on 2026-08-15:
+
+- Android debug APK: built and installed successfully on an API 36 ARM64 emulator
+- Android app: onboarding, API connection, empty state, debt-first home, and Session detail launched and visually inspected
+- Flutter analyze / widget test: passed
+- FastAPI process smoke test / Ruff / Pytest: passed
+- macOS and iOS builds: not run because the available Xcode installation is incomplete and CocoaPods is absent
+- Windows build: not run because this environment is macOS
+- live hosted AI/ASR call: not run because no API key was supplied; the real provider implementation is covered through its contract and deterministic integration provider
+
 ## Roadmap
 
 **Done:** the usable learning-debt loop described above, provider abstraction, privacy gates, tests, four-platform project scaffolding, and CI.
@@ -160,4 +178,3 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Please preserve the three product invari
 ## License
 
 [MIT](LICENSE)
-

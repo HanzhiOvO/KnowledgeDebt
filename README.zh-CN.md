@@ -53,6 +53,14 @@ flutter run
 
 桌面端 / iOS 默认访问 `http://127.0.0.1:8123`；Android 模拟器默认访问 `http://10.0.2.2:8123`。真机请在设置中改成局域网可访问地址。
 
+## 截图
+
+<p align="center">
+  <img src="docs/screenshots/android-onboarding.png" width="30%" alt="引导页">
+  <img src="docs/screenshots/android-home.png" width="30%" alt="债务优先首页">
+  <img src="docs/screenshots/android-session-detail.png" width="30%" alt="Session 详情">
+</p>
+
 ## AI / ASR
 
 在 `.env` 中设置：
@@ -80,6 +88,8 @@ make verify
 
 集成测试真实覆盖 Course → Session → Resource → Knowledge Point → Remediation → Question → Mastery → Session complete。
 
+2026-08-15 本地验证结果：Android debug APK 已构建并安装到 API 36 ARM64 模拟器；引导、API 连接、空状态、债务首页和 Session 详情均已真实启动并人工检查；Flutter analyze / widget test、FastAPI 冒烟、Ruff 与 Pytest 均通过。当前机器的 Xcode 不完整且无 CocoaPods，因此 macOS / iOS 未构建；Windows 未在 macOS 环境中构建；没有提供 API Key，因此未产生真实托管 AI / ASR 调用费用。
+
 ## 路线图
 
 - **已完成：** 可用的知识债务闭环、结构化数据、Provider 抽象、隐私确认、自动化测试、四端工程骨架与 CI。
@@ -95,4 +105,3 @@ KnowledgeDebt 是一个通过 Vibe Coding 工作流构建的开源实验项目�
 ## License
 
 [MIT](LICENSE)
-
