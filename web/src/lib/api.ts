@@ -1,0 +1,55 @@
+import "server-only";
+
+import type {
+  ApiResult,
+  Course,
+  Debt,
+  HomePayload,
+  SessionDetail,
+} from "@/types/domain";
+
+const API_URL = process.env.KNOWLEDGEDEBT_API_URL ?? "http://127.0.0.1:8123";
+
+async function request<T>(path: string): Promise<ApiResult<T>> {
+  try {
+    const response = await fetch(`${API_URL}${path}`, {
+      cache: "no-store",
+      headers: process.env.KNOWLEDGEDEBT_ACCESS_TOKEN
+        ? { Authorization: `Bearer ${process.env.KNOWLEDGEDEBT_ACCESS_TOKEN}` }
+        : undefined,
+    });
+    if (!response.ok) {
+      return { ok: false, error: `API ${response.status}: ${response.statusText}` };
+    }
+    return { ok: true, data: (await response.json()) as T };
+  } catch {
+    return {
+      ok: false,
+      error: `无法连接 ${API_URL}。运行 make dev 后刷新页面。`,
+    };
+  }
+}
+
+export function getHome() {
+  return request<HomePayload>("/home");
+}
+
+export function getCourses() {
+  return request<Course[]>("/courses");
+}
+
+export function getCourse(courseId: string) {
+  return request<Course>(`/courses/${courseId}`);
+}
+
+export function getSession(sessionId: string) {
+  return request<SessionDetail>(`/sessions/${sessionId}`);
+}
+
+export function getDebts() {
+  return request<Debt[]>("/debts");
+}
+
+export function getProviderSettings() {
+  return request<Record<string, string | boolean>>("/settings/provider");
+}
