@@ -89,11 +89,14 @@ def create_app(
         settings.asr_model,
         settings.embedding_model,
     )
+    selected_embedding_provider = embedding_provider
+    if selected_embedding_provider is None and settings.embedding_provider == "openai_compatible":
+        selected_embedding_provider = default_provider
     service = KnowledgeService(
         database,
         ai_provider or default_provider,
         asr_provider or default_provider,
-        embedding_provider,
+        selected_embedding_provider,
     )
     if storage_provider:
         storage = storage_provider
@@ -222,35 +225,36 @@ def create_app(
         session = database.get_session(session_id)
         if operation not in {"analysis", "assessment", "transcription", "indexing"}:
             raise HTTPException(status_code=422, detail="unsupported operation")
-        provider = service.ai
-        provider_name = settings.ai_provider
+        providers = [(settings.ai_provider, service.ai), (settings.embedding_provider, service.embeddings)]
         resources = session["resources"]
         sends = ["Session title and notes", "retrieved transcript segments", "retrieved document chunks"]
         does_not_send = ["local filesystem paths", "unselected document chunks", "original audio/video binaries"]
         if operation == "transcription":
-            provider = service.asr
-            provider_name = settings.asr_provider
+            providers = [(settings.asr_provider, service.asr)]
             resources = [item for item in resources if item["id"] == resource_id]
             if not resources:
                 raise HTTPException(status_code=422, detail="select a Session audio or video resource")
             sends = ["the selected original audio/video binary", "its MIME type and filename"]
             does_not_send = ["other Session resources", "course history", "local filesystem paths"]
         elif operation == "indexing":
-            provider = service.embeddings
-            provider_name = settings.embedding_provider
+            providers = [(settings.embedding_provider, service.embeddings)]
             resources = [item for item in resources if not resource_id or item["id"] == resource_id]
             sends = ["text chunks from the listed resources"]
             does_not_send = ["original files", "audio/video binaries", "local filesystem paths"]
+        external_providers = [
+            name for name, provider in providers if getattr(provider, "requires_external_upload", False)
+        ]
         return {
             "operation": operation,
-            "provider": provider_name,
-            "external": bool(getattr(provider, "requires_external_upload", False)),
+            "provider": ", ".join(external_providers) if external_providers else "local providers",
+            "providers": [name for name, _ in providers],
+            "external": bool(external_providers),
             "resources": [
                 {"id": item["id"], "name": item["name"], "type": item["type"]} for item in resources
             ],
             "will_send": sends,
             "will_not_send": does_not_send,
-            "confirmation_required": bool(getattr(provider, "requires_external_upload", False)),
+            "confirmation_required": bool(external_providers),
         }
 
     @app.post("/sessions/{session_id}/resources/upload", status_code=201)
@@ -320,7 +324,8 @@ def create_app(
         )
         if extraction.chunks:
             database.replace_document_chunks(resource["id"], extraction.chunks)
-            await service.retriever.index_resource(resource["id"])
+            if not getattr(service.embeddings, "requires_external_upload", False):
+                await service.retriever.index_resource(resource["id"])
             resource = database.get_resource(resource["id"])
         reconstruction, learning = service.refresh_scores(session_id)
         resource["session_scores"] = {"reconstruction": reconstruction, "learning_coverage": learning}
@@ -369,11 +374,17 @@ def create_app(
     @app.post("/sessions/{session_id}/retrieve")
     async def retrieve(session_id: str, payload: RetrievalRequest) -> list[dict]:
         database.get_session(session_id)
+        if getattr(service.embeddings, "requires_external_upload", False):
+            raise HTTPException(
+                status_code=409,
+                detail="External embedding retrieval must run inside a consented analysis or assessment operation.",
+            )
         return await service.retriever.retrieve(session_id, payload.query, payload.policy, payload.limit)
 
     @app.post("/sessions/{session_id}/analyze")
     async def analyze(session_id: str, payload: AnalysisRequest) -> dict:
         _permission(payload.confirm_external_upload, service.ai)
+        _permission(payload.confirm_external_upload, service.embeddings)
         return await service.analyze(session_id)
 
     async def run_transcription_job(job_id: str, resource_id: str) -> None:
@@ -422,8 +433,11 @@ def create_app(
         database.get_session(session_id)
         if payload.kind in {JobKind.ANALYSIS, JobKind.ASSESSMENT}:
             _permission(payload.confirm_external_upload, service.ai)
+            _permission(payload.confirm_external_upload, service.embeddings)
         elif payload.kind == JobKind.TRANSCRIPTION:
             _permission(payload.confirm_external_upload, service.asr)
+        elif payload.kind == JobKind.INDEXING:
+            _permission(payload.confirm_external_upload, service.embeddings)
         if payload.kind in {JobKind.TRANSCRIPTION, JobKind.INDEXING}:
             if not payload.resource_id:
                 raise HTTPException(status_code=422, detail="resource_id is required for this job")
@@ -463,6 +477,7 @@ def create_app(
     @app.post("/sessions/{session_id}/assessment", status_code=201)
     async def generate_assessment(session_id: str, payload: AnalysisRequest) -> list[dict]:
         _permission(payload.confirm_external_upload, service.ai)
+        _permission(payload.confirm_external_upload, service.embeddings)
         questions = await service.make_quiz(session_id)
         for question in questions:
             question.pop("reference_answer", None)
@@ -480,11 +495,13 @@ def create_app(
     @app.post("/questions/{question_id}/answer")
     async def answer(question_id: str, payload: AnswerSubmission) -> dict:
         _permission(payload.confirm_external_upload, service.ai)
+        _permission(payload.confirm_external_upload, service.embeddings)
         return await service.evaluate(question_id, payload.answer)
 
     @app.post("/knowledge-points/{point_id}/remediation", status_code=201)
     async def remediate(point_id: str, payload: RemediationRequest) -> dict:
         _permission(payload.confirm_external_upload, service.ai)
+        _permission(payload.confirm_external_upload, service.embeddings)
         return await service.remediate(point_id, payload.reason)
 
     @app.post("/learning-steps/{step_id}/complete")

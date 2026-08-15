@@ -229,6 +229,64 @@ def test_analysis_job_persists_progress_and_result(tmp_path: Path):
     assert completed["result"]["knowledge_point_count"] == 1
 
 
+def test_external_embeddings_are_deferred_until_consented_indexing_job(tmp_path: Path):
+    class ExternalEmbeddingProvider:
+        requires_external_upload = True
+
+        def __init__(self):
+            self.calls = 0
+
+        async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+            self.calls += 1
+            return [[1.0, 0.0] for _ in texts]
+
+    settings = Settings(
+        tmp_path,
+        "test",
+        "test",
+        None,
+        "http://invalid",
+        "test",
+        "test",
+        embedding_provider="external-test",
+    )
+    provider = TestProvider()
+    embeddings = ExternalEmbeddingProvider()
+    app = create_app(
+        settings,
+        Database(tmp_path / "external-embedding.sqlite3"),
+        provider,
+        provider,
+        embeddings,
+    )
+    client = TestClient(app)
+    course = client.post("/courses", json={"name": "Privacy"}).json()
+    session = client.post(f"/courses/{course['id']}/sessions", json={"title": "Indexing"}).json()
+    resource = client.post(
+        f"/sessions/{session['id']}/resources/upload",
+        data={"resource_type": "note", "evidence_level": "official"},
+        files={"file": ("private.txt", "private course text", "text/plain")},
+    ).json()
+
+    assert embeddings.calls == 0
+    denied = client.post(
+        f"/sessions/{session['id']}/jobs",
+        json={"kind": "indexing", "resource_id": resource["id"]},
+    )
+    assert denied.status_code == 409
+    accepted = client.post(
+        f"/sessions/{session['id']}/jobs",
+        json={
+            "kind": "indexing",
+            "resource_id": resource["id"],
+            "confirm_external_upload": True,
+        },
+    )
+    assert accepted.status_code == 202
+    assert client.get(f"/jobs/{accepted.json()['id']}").json()["status"] == "succeeded"
+    assert embeddings.calls == 1
+
+
 def test_weak_answer_creates_targeted_follow_up_questions(tmp_path: Path):
     client = make_client(tmp_path)
     course = client.post("/courses", json={"name": "Calculus"}).json()

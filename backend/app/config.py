@@ -18,7 +18,7 @@ class Settings:
     base_url: str
     ai_model: str
     asr_model: str
-    embedding_provider: str = "openai_compatible"
+    embedding_provider: str = "hash"
     embedding_model: str = "text-embedding-3-small"
     storage_provider: str = "local"
     s3_bucket: str | None = None
@@ -37,7 +37,7 @@ class Settings:
             base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
             ai_model=os.getenv("KNOWLEDGEDEBT_AI_MODEL", "gpt-5-mini"),
             asr_model=os.getenv("KNOWLEDGEDEBT_ASR_MODEL", "gpt-4o-mini-transcribe"),
-            embedding_provider=os.getenv("KNOWLEDGEDEBT_EMBEDDING_PROVIDER", "openai_compatible"),
+            embedding_provider=os.getenv("KNOWLEDGEDEBT_EMBEDDING_PROVIDER", "hash"),
             embedding_model=os.getenv("KNOWLEDGEDEBT_EMBEDDING_MODEL", "text-embedding-3-small"),
             storage_provider=os.getenv("KNOWLEDGEDEBT_STORAGE_PROVIDER", "local"),
             s3_bucket=os.getenv("KNOWLEDGEDEBT_S3_BUCKET"),

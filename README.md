@@ -1,115 +1,74 @@
 # KnowledgeDebt
 
-**Classroom attendance may fail. Learning continuity should not.**
+> Classroom attendance may fail. Learning continuity should not.
 
-KnowledgeDebt is an open-source, local-first learning recovery app for university students. It tracks classes that have already happened but are not yet genuinely mastered, reconstructs what likely happened from evidence of different trust levels, builds a from-zero learning path, and clears debt only after a source-grounded mastery assessment.
+KnowledgeDebt is an open-source, Web-first system for recovering lectures a student missed or did not master. It reconstructs a real **Course Session** from evidence, builds a source-grounded learning path, measures knowledge debt, and clears that debt only after sufficient mastery evidence.
 
-> 课堂可以缺席，知识不能欠账。
+[中文说明](README.zh-CN.md) · [Deployment](docs/deployment.md) · [Privacy](docs/privacy.md) · [Architecture decision](docs/architecture/0001-web-first-thin-backend.md)
 
-[中文文档](README.zh-CN.md)
+> Experimental `0.x` software: the learning model is usable and tested, but APIs and schemas may still evolve before a future `1.0`.
 
-## Why this project exists
+## The product model
 
-A student can miss a lecture, lose focus, leave a phone recording in the room, or have no recording at all. A class still happened. KnowledgeDebt models that class as a **Course Session**, independent of any recording, then helps the student restore learning continuity.
-
-This is deliberately not a “record → transcribe → summarize” app. Its complete loop is:
+A Course Session represents one class that really happened. It exists even when there is no recording and no material yet. Audio, video, slides, textbooks, notes, assignments, and links are evidence attached to that Session—not the Session itself.
 
 ```text
-Course Session → evidence → classroom reconstruction → knowledge points
-→ from-zero learning path → source-grounded assessment → gap diagnosis
+Course Session → evidence → classroom reconstruction → Knowledge Points
+→ from-zero learning path → adaptive Mastery Assessment → gap diagnosis
 → targeted remediation → reassessment → debt cleared → Session complete
 ```
 
-## Core concepts
+Three invariants shape every feature:
 
-- **Course Session** — one real class occurrence. Audio is optional evidence, never the Session itself.
-- **Classroom Reconstruction** — what the teacher actually covered, split into confirmed and inferred claims with source references.
-- **Reconstruction Score** — confidence in restoring what happened. It uses `weight × coverage × quality × relevance`, with duplicate source types saturating instead of stacking.
-- **Learning Coverage** — a separate estimate of whether current material can teach the class from zero.
-- **Knowledge Debt** — a course-required Knowledge Point whose current mastery is below its target level.
-- **Mastery Assessment** — 3–5 source-grounded questions evaluated semantically against explicit rubrics. Reading a note never clears debt.
+- external material may teach a topic but cannot prove what a teacher covered;
+- reconstruction confidence and learning-material coverage are separate measurements;
+- reading or watching never clears debt—persisted assessment evidence does.
 
-Evidence has three trust levels: real classroom evidence, official course material, and supplementary learning material. Supplementary material can teach a concept but must never be presented as proof that the teacher covered it.
+## What is implemented
 
-## Implemented in this MVP
-
-- Flutter client generated for Android, iOS, macOS, and Windows from one codebase
-- onboarding, debt-first home, Courses, Course Sessions, Session detail, resources, reconstruction, learning path, debt, quiz, recording, and settings screens
-- Course Profile weights editable per course
-- Session creation with zero resources; “no recording” is a normal empty state
-- local recording with pause/resume, explicit stop, navigation guard, and five-minute safety segments
-- local upload of audio, video, PDF, PPTX, text, notes, textbook, syllabus, and assignments
-- resource coverage, quality, and Session relevance controls
-- PDF/PPTX/text extraction; legacy `.ppt` is stored but intentionally receives low effective quality until converted
-- SQLite entities for resources, transcript segments, reconstructions, Knowledge Points, learning steps, debts, questions, attempts, and targeted remediations
-- independent reconstruction and learning-coverage scoring
-- replaceable `AIProvider` and `TranscriptionProvider` protocols
-- a real OpenAI-compatible structured JSON implementation for analysis, quiz generation, semantic answer evaluation, remediation, and ASR
-- explicit consent gate before every AI/ASR external upload
-- mastery levels 0–4, target-aware debt state, focused remediation, reassessment, and automatic Session completion
-- local cached home/course metadata for offline browsing
-- automated backend unit/integration tests, Flutter widget test, linting, and GitHub Actions CI
+- responsive Next.js 16 / React 19 browser client with debt-first home, Courses, Sessions, evidence, learning, and assessment workspaces;
+- FastAPI application API with optional single-user bearer-token protection and a same-origin Web proxy that keeps secrets server-side;
+- Course Sessions that are valid with zero recordings or resources;
+- a four-channel evidence profile totaling 100: classroom `40`, official Session material `35`, course context `15`, supplementary material `10`;
+- timeline-aware recording union coverage, so overlapping clips are counted once and gaps stay visible;
+- formal transcript segments and validated source locators for timestamps, PDF pages, PPT slides, chunks, and URLs;
+- PDF page, PPTX slide, and text chunk extraction, visual derivatives, deterministic local embeddings, and reconstruction/learning retrieval policies;
+- adaptive multi-Knowledge-Point questions, targeted follow-ups, persisted MasteryEvidence, dependency blocking, and a two-evidence minimum before mastery;
+- asynchronous transcription, indexing, analysis, and assessment jobs with stage/progress/result state;
+- replaceable AI, ASR, embedding, and storage providers; local storage and S3-compatible storage are supported;
+- SQLite for zero-configuration development, PostgreSQL for deployment, SQLAlchemy metadata, and tested Alembic migrations;
+- Docker Compose for Web + API + PostgreSQL within an approximately 2 CPU / 2 GB base profile;
+- a preserved Flutter prototype under `legacy/flutter-client/`; it is no longer the primary client.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  C["Flutter client\nAndroid · iOS · macOS · Windows"]
-  A["FastAPI local/self-hosted API"]
-  D[("SQLite + local resource storage")]
-  P["AIProvider"]
-  T["TranscriptionProvider"]
-  X["PDF / PPTX parser"]
-  C -->|"REST · explicit upload consent"| A
-  A --> D
-  A --> P
-  A --> T
-  A --> X
+  B["Browser · Next.js"] -->|"same-origin /api/backend"| A["FastAPI · orchestration and validation"]
+  A --> D[("SQLite dev / PostgreSQL deploy")]
+  A --> S["Local or S3-compatible storage"]
+  A --> P["AI / ASR providers"]
+  A --> E["Local hash or external embedding provider"]
 ```
 
-The backend stores structured domain objects, not one large Markdown result. See [`backend/app/database.py`](backend/app/database.py) for the schema and [`backend/app/providers/base.py`](backend/app/providers/base.py) for provider contracts.
+The default self-hosted profile is intentionally thin: application logic, validation, retrieval, and storage run on the server; expensive AI/ASR may use external providers only after an operation-specific consent step. Local provider implementations remain possible through the same contracts.
 
-## Screenshots
+## Quick start: local development
 
-<p align="center">
-  <img src="docs/screenshots/android-onboarding.png" width="30%" alt="KnowledgeDebt onboarding">
-  <img src="docs/screenshots/android-home.png" width="30%" alt="Debt-first home">
-  <img src="docs/screenshots/android-session-detail.png" width="30%" alt="Course Session detail">
-</p>
-
-## Getting started
-
-Requirements:
-
-- Flutter stable 3.35+ (the current repository was verified with Flutter 3.47 / Dart 3.13)
-- Python 3.12+
-- platform toolchains for the targets you intend to build
+Requirements: Python 3.12+, Node.js 24+, and npm 11+.
 
 ```bash
 git clone https://github.com/HanzhiOvO/KnowledgeDebt.git
 cd KnowledgeDebt
-python3 -m venv .venv
-.venv/bin/pip install -r backend/requirements-dev.txt
+make backend-install
+make web-install
 cp .env.example .env
+make dev
 ```
 
-Configure `.env`, then start the API:
+Open `http://localhost:3000`. The API listens on `http://127.0.0.1:8123`. Without `KNOWLEDGEDEBT_DATABASE_URL`, data and resources stay under the configured local data directory and SQLite requires no separate service.
 
-```bash
-make backend-run
-```
-
-In another terminal:
-
-```bash
-cd client
-flutter pub get
-flutter run
-```
-
-The default endpoint is `http://127.0.0.1:8123` on desktop/iOS and `http://10.0.2.2:8123` on the Android emulator. It can be changed in Settings. For a physical phone, use a reachable LAN address and review your firewall.
-
-## AI and ASR configuration
+To enable real hosted analysis and transcription, set at least:
 
 ```dotenv
 OPENAI_API_KEY=your-key
@@ -118,63 +77,77 @@ KNOWLEDGEDEBT_AI_MODEL=gpt-5-mini
 KNOWLEDGEDEBT_ASR_MODEL=gpt-4o-mini-transcribe
 ```
 
-Keys stay in the backend environment and are never returned to the Flutter client. The implementation uses OpenAI-compatible Chat Completions structured output and audio transcription endpoints. Provider contracts are separate from the application service so another hosted or local implementation can be added without changing the domain pipeline.
+The default embedding provider is the local deterministic `hash` provider, so document upload never silently sends text elsewhere. External embedding calls are deferred until an explicit indexing consent action.
 
-## Privacy
+## Quick start: Docker Compose
 
-Record only when allowed by local law, university policy, course rules, and the people involved. Obtain permission when required.
+```bash
+cp .env.example .env
+# Set a strong POSTGRES_PASSWORD and, if exposed beyond localhost,
+# a strong KNOWLEDGEDEBT_ACCESS_TOKEN in .env.
+docker compose up --build
+```
 
-- recordings begin locally and use safety segments;
-- attaching a recording clearly identifies the configured backend destination;
-- AI/ASR actions show a separate consent prompt;
-- `.env`, databases, and common media formats are ignored by Git;
-- resource content and API keys are not written to application logs.
+Open `http://localhost:3000`. PostgreSQL and resource storage use named volumes; the API is bound to loopback on port `8123`. See [deployment documentation](docs/deployment.md) for reverse proxy, S3, backups, migrations, and low-resource operation.
 
-Self-hosting the backend is recommended for sensitive course material. “Local-first” does not mean “nothing can ever leave the device”; the UI makes the boundary visible before it does.
+## Privacy boundary
+
+The confirmation dialog identifies the operation, provider, exact resources, data that will be sent, and data that will not be sent. Consent is one operation only; it is not stored as a blanket preference.
+
+- API keys and the optional access token stay in server environment variables.
+- Browser mutations go through the same-origin Next.js proxy.
+- Original media is sent only for a selected transcription operation.
+- Analysis and assessment use retrieved text/transcript subsets, not original media binaries.
+- External embedding is off by default and is never triggered automatically by upload.
+- Model-produced resource IDs, timestamps, pages, slides, and chunks are validated against stored evidence.
+
+Recording a class may require permission under local law, school policy, course rules, or the expectations of other people in the room. Self-hosting changes where data is processed; it does not remove that responsibility. Read the full [privacy model](docs/privacy.md).
 
 ## Verification
 
 ```bash
 make verify
+make migrate
 ```
 
-The backend integration test executes:
+The test suite includes a synthetically generated but structurally real 90-minute WAV recording, a 40-slide PPTX, and an 80-page PDF. They pass through multipart upload, document parsing, local indexing, timestamped transcription, dual-policy retrieval, reconstruction, remediation, adaptive assessment, MasteryEvidence aggregation, dependency updates, and Session completion. CI additionally runs the Alembic migration and repository flow against PostgreSQL 16.
+
+Primary checks:
+
+```bash
+make backend-lint
+make backend-test
+make web-test
+```
+
+The legacy Flutter checks remain available as `make legacy-client-test`, but Flutter is not needed to run or develop the primary Web product.
+
+## Repository map
 
 ```text
-Course → Session → Resource → Reconstruction → Knowledge Point → Debt
-→ targeted remediation → Question → semantic evaluation → Mastery → Session complete
+web/                    Next.js primary client
+backend/app/            FastAPI domain, providers, retrieval, storage, database
+backend/alembic/        versioned schema migrations
+backend/tests/          unit, integration, migration, and realistic E2E tests
+legacy/flutter-client/  preserved experimental native prototype
+docs/                   architecture, privacy, deployment, and migration notes
+compose.yaml            Web + API + PostgreSQL deployment
 ```
 
-Local verification on 2026-08-15:
+## Status and direction
 
-- Android debug APK: built and installed successfully on an API 36 ARM64 emulator
-- Android app: onboarding, API connection, empty state, debt-first home, and Session detail launched and visually inspected
-- Flutter analyze / widget test: passed
-- FastAPI process smoke test / Ruff / Pytest: passed
-- macOS and iOS builds: not run because the available Xcode installation is incomplete and CocoaPods is absent
-- Windows build: not run because this environment is macOS
-- live hosted AI/ASR call: not run because no API key was supplied; the real provider implementation is covered through its contract and deterministic integration provider
+Implemented now: the full learning-debt loop, evidence validation, adaptive mastery, jobs, provider/storage boundaries, Web-first UI, PostgreSQL deployment path, and automated cross-layer verification.
 
-## Roadmap
+Likely next work: source-page preview in the learning UI, richer recording playback, pgvector-backed retrieval for large libraries, optional local Whisper/LLM packages, accessibility, localization, and hosted multi-user identity as a separate deployment profile.
 
-**Done:** the usable learning-debt loop described above, provider abstraction, privacy gates, tests, four-platform project scaffolding, and CI.
-
-**In progress:** real-device UX validation, richer audio timeline playback, source-page preview, and resilient background recording on every OS version.
-
-**Planned:** optional local Whisper/LLM providers, learned Course Profiles, richer dependency-aware daily minimum planning, sync, and accessibility/localization polish.
-
-Not currently implemented: social features, school-system login, web crawling, payments, a public question bank, or a teacher product.
+Not currently promised: a social network, public question bank, school-system integration, payments, or a teacher administration product.
 
 ## Vibe Coding
 
-KnowledgeDebt is an open-source experimental project built through a vibe-coding workflow. Product vision, requirements, architecture discussions, and substantial implementation work are collaboratively driven by a human creator and AI coding agents. It is AI-assisted development with human-directed product design, not an attempt to hide AI involvement or substitute claims for verification.
+KnowledgeDebt is an open-source experimental project built through a Vibe Coding workflow. Product intent, requirements, architecture decisions, implementation, and verification are developed collaboratively by a human creator and AI coding agents. This is AI-assisted engineering under human-directed product ownership, with verification kept visible.
 
 Project owner: **HanzhiOvO**
 
-## Contributing
+## Contributing and license
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Please preserve the three product invariants: a Session is not a recording; debt means required but not yet mastered; only assessment can clear debt.
-
-## License
-
-[MIT](LICENSE)
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing the product model or schema. KnowledgeDebt is released under the [MIT License](LICENSE).
