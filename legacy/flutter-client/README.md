@@ -1,7 +1,15 @@
-# Legacy Flutter client
+# Legacy Flutter 客户端
 
-This is the original experimental multi-platform client for KnowledgeDebt. It is preserved so existing Technical MVP work and API behavior remain inspectable, but it is not the primary product surface.
+这是 KnowledgeDebt 最初的实验性多平台客户端。项目保留它，便于检查 Technical MVP 的历史实现与 API 兼容行为，但它已不是主要产品入口。
 
-Active product development happens in [`../../web`](../../web). Bug fixes that protect existing users are welcome here; new product features should normally target the Web client first.
+当前产品开发位于 [`../../web`](../../web)。保护已有用户的 Bug 修复仍然欢迎；新产品功能通常应优先实现到 Web 客户端。
 
-This client remains pre-1.0 and is not an official native release.
+该客户端仍属于 `0.x` 实验阶段，不代表正式原生版本发布。
+
+如已安装 Flutter SDK，可运行：
+
+```bash
+flutter pub get
+flutter analyze
+flutter test
+```
