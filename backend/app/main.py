@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import re
+import secrets
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .config import Settings
@@ -79,7 +81,7 @@ def create_app(
 ) -> FastAPI:
     settings = settings or Settings.from_env()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    database = db or Database(settings.data_dir / "knowledgedebt.sqlite3")
+    database = db or Database(settings.database_url or settings.data_dir / "knowledgedebt.sqlite3")
     default_provider = OpenAICompatibleProvider(
         settings.api_key,
         settings.base_url,
@@ -123,6 +125,24 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def optional_access_token(request: Request, call_next):
+        """Protect the API when the operator configures a single-user token."""
+
+        if not settings.access_token or request.method == "OPTIONS" or request.url.path == "/health":
+            return await call_next(request)
+        authorization = request.headers.get("authorization", "")
+        scheme, _, supplied_token = authorization.partition(" ")
+        if scheme.lower() != "bearer" or not secrets.compare_digest(
+            supplied_token, settings.access_token
+        ):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "A valid access token is required."},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return await call_next(request)
 
     @app.exception_handler(KeyError)
     async def missing_handler(_, exc: KeyError):

@@ -1,5 +1,5 @@
 export const publicApiUrl =
-  process.env.NEXT_PUBLIC_KNOWLEDGEDEBT_API_URL ?? "http://127.0.0.1:8123";
+  process.env.NEXT_PUBLIC_KNOWLEDGEDEBT_API_URL ?? "/api/backend";
 
 export async function mutate<T>(path: string, init: RequestInit): Promise<T> {
   const response = await fetch(`${publicApiUrl}${path}`, init);

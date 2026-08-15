@@ -185,6 +185,31 @@ def test_external_upload_requires_explicit_consent(tmp_path: Path):
     assert home["minimum_minutes"] == 5
 
 
+def test_optional_access_token_protects_api_but_not_health(tmp_path: Path):
+    settings = Settings(
+        tmp_path,
+        "test",
+        "test",
+        None,
+        "http://invalid",
+        "test",
+        "test",
+        access_token="correct-horse-battery-staple",
+    )
+    provider = TestProvider()
+    client = TestClient(create_app(settings, Database(tmp_path / "auth.sqlite3"), provider, provider))
+
+    assert client.get("/health").status_code == 200
+    unauthorized = client.get("/courses")
+    assert unauthorized.status_code == 401
+    assert unauthorized.headers["www-authenticate"] == "Bearer"
+    assert client.get("/courses", headers={"Authorization": "Bearer wrong"}).status_code == 401
+    authorized = client.get(
+        "/courses", headers={"Authorization": "Bearer correct-horse-battery-staple"}
+    )
+    assert authorized.status_code == 200
+
+
 def test_analysis_job_persists_progress_and_result(tmp_path: Path):
     client = make_client(tmp_path)
     course = client.post("/courses", json={"name": "Physics"}).json()

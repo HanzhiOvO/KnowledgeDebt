@@ -24,6 +24,7 @@ class Settings:
     s3_bucket: str | None = None
     s3_endpoint_url: str | None = None
     access_token: str | None = None
+    database_url: str | None = None
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -42,4 +43,5 @@ class Settings:
             s3_bucket=os.getenv("KNOWLEDGEDEBT_S3_BUCKET"),
             s3_endpoint_url=os.getenv("KNOWLEDGEDEBT_S3_ENDPOINT_URL"),
             access_token=os.getenv("KNOWLEDGEDEBT_ACCESS_TOKEN"),
+            database_url=os.getenv("KNOWLEDGEDEBT_DATABASE_URL"),
         )
