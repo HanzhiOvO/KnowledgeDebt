@@ -26,14 +26,18 @@ __pycache__/
 build/
 coverage/
 **/GeneratedPluginRegistrant.*
-client/android/.gradle/
-client/android/local.properties
-client/ios/Flutter/ephemeral/
-client/macos/Flutter/ephemeral/
+legacy/flutter-client/android/.gradle/
+legacy/flutter-client/android/local.properties
+legacy/flutter-client/ios/Flutter/ephemeral/
+legacy/flutter-client/macos/Flutter/ephemeral/
+
+# Next.js
+web/.next/
+web/node_modules/
+web/.env.local
 
 # Editors and OS
 .idea/
 .vscode/
 .DS_Store
 *.iml
-

@@ -1,115 +1,74 @@
 # KnowledgeDebt
 
-**Classroom attendance may fail. Learning continuity should not.**
+> **课堂可以缺席，知识不能欠账。**
 
-KnowledgeDebt is an open-source, local-first learning recovery app for university students. It tracks classes that have already happened but are not yet genuinely mastered, reconstructs what likely happened from evidence of different trust levels, builds a from-zero learning path, and clears debt only after a source-grounded mastery assessment.
+KnowledgeDebt 是一个开源、Web-first 的课程恢复系统，面向“课堂已经发生，但学生尚未真正掌握”的场景。它从录音、课件、教材、笔记等证据中还原一次真实的 **Course Session**，生成带来源的从零学习路径，计算知识债务，并且只在积累足够的掌握证据后清债。
 
-> 课堂可以缺席，知识不能欠账。
+[English](README.en.md) · [部署指南](docs/deployment.md) · [隐私模型](docs/privacy.md) · [数据库迁移](docs/migrations.md) · [架构决策](docs/architecture/0001-web-first-thin-backend.md)
 
-[中文文档](README.zh-CN.md)
+> 当前为实验性 `0.x` 版本：核心闭环可运行且有自动化验收，但 API 与数据结构在未来 `1.0` 前仍可能演进。
 
-## Why this project exists
+## 它解决什么问题
 
-A student can miss a lecture, lose focus, leave a phone recording in the room, or have no recording at all. A class still happened. KnowledgeDebt models that class as a **Course Session**, independent of any recording, then helps the student restore learning continuity.
-
-This is deliberately not a “record → transcribe → summarize” app. Its complete loop is:
+Course Session 代表一次真实发生的课堂。即使没有录音、没有 PPT、甚至还没有任何资料，它仍然合法存在。音频、视频、课件、教材、笔记、作业与链接只是附着在 Session 上的证据，不是 Session 本身。
 
 ```text
-Course Session → evidence → classroom reconstruction → knowledge points
-→ from-zero learning path → source-grounded assessment → gap diagnosis
-→ targeted remediation → reassessment → debt cleared → Session complete
+Course Session → 证据 → 课堂还原 → Knowledge Point
+→ 从零学习路径 → 自适应 Mastery Assessment → 缺口诊断
+→ 针对性补课 → 再验收 → 债务清零 → Session 完成
 ```
 
-## Core concepts
+所有功能遵守三个产品不变量：
 
-- **Course Session** — one real class occurrence. Audio is optional evidence, never the Session itself.
-- **Classroom Reconstruction** — what the teacher actually covered, split into confirmed and inferred claims with source references.
-- **Reconstruction Score** — confidence in restoring what happened. It uses `weight × coverage × quality × relevance`, with duplicate source types saturating instead of stacking.
-- **Learning Coverage** — a separate estimate of whether current material can teach the class from zero.
-- **Knowledge Debt** — a course-required Knowledge Point whose current mastery is below its target level.
-- **Mastery Assessment** — 3–5 source-grounded questions evaluated semantically against explicit rubrics. Reading a note never clears debt.
+- 外部资料可以帮助学习，但不能冒充“老师课堂上讲过”的证据；
+- 课堂还原可信度与学习资料完备度必须分开计算；
+- 阅读或观看不能清债，只有持久化的验收证据可以清债。
 
-Evidence has three trust levels: real classroom evidence, official course material, and supplementary learning material. Supplementary material can teach a concept but must never be presented as proof that the teacher covered it.
+## 已实现能力
 
-## Implemented in this MVP
+- Next.js 16 / React 19 响应式浏览器端：债务首页、课程、Session、资料、学习与验收工作区；
+- FastAPI 应用 API、可选单用户 Bearer Token，以及不会把令牌暴露到浏览器的同源代理；
+- 无资料、无录音也能创建并管理 Course Session；
+- 总计 100 分的四通道证据模型：课堂证据 `40`、本节官方资料 `35`、课程上下文 `15`、补充资料 `10`；
+- 基于时间并集的录音覆盖率：重叠片段只计算一次，缺失区间不会被平均数掩盖；
+- 正式 TranscriptSegment，以及时间戳、PDF 页、PPT 页、Chunk、URL 的来源定位与服务端校验；
+- PDF 按页、PPTX 按页、文本按块解析，视觉派生文件、本地向量，以及“课堂还原 / 从零学习”双检索策略；
+- 多知识点自适应题目、弱项追问、持久化 MasteryEvidence、知识点依赖阻塞，以及至少两份有效证据才允许清债；
+- 转写、索引、分析、出题异步 Job，带阶段、进度、结果与错误状态；
+- 可替换 AI、ASR、Embedding、Storage Provider；支持本地文件和 S3 兼容存储；
+- 开发默认 SQLite，部署支持 PostgreSQL，包含 SQLAlchemy 元数据与经过测试的 Alembic 迁移；
+- Web + API + PostgreSQL 的 Docker Compose 基础配置，约 2 CPU / 2 GB 即可运行薄后端；
+- 原 Flutter 原型保存在 `legacy/flutter-client/`，不再是主客户端。
 
-- Flutter client generated for Android, iOS, macOS, and Windows from one codebase
-- onboarding, debt-first home, Courses, Course Sessions, Session detail, resources, reconstruction, learning path, debt, quiz, recording, and settings screens
-- Course Profile weights editable per course
-- Session creation with zero resources; “no recording” is a normal empty state
-- local recording with pause/resume, explicit stop, navigation guard, and five-minute safety segments
-- local upload of audio, video, PDF, PPTX, text, notes, textbook, syllabus, and assignments
-- resource coverage, quality, and Session relevance controls
-- PDF/PPTX/text extraction; legacy `.ppt` is stored but intentionally receives low effective quality until converted
-- SQLite entities for resources, transcript segments, reconstructions, Knowledge Points, learning steps, debts, questions, attempts, and targeted remediations
-- independent reconstruction and learning-coverage scoring
-- replaceable `AIProvider` and `TranscriptionProvider` protocols
-- a real OpenAI-compatible structured JSON implementation for analysis, quiz generation, semantic answer evaluation, remediation, and ASR
-- explicit consent gate before every AI/ASR external upload
-- mastery levels 0–4, target-aware debt state, focused remediation, reassessment, and automatic Session completion
-- local cached home/course metadata for offline browsing
-- automated backend unit/integration tests, Flutter widget test, linting, and GitHub Actions CI
-
-## Architecture
+## 架构
 
 ```mermaid
 flowchart LR
-  C["Flutter client\nAndroid · iOS · macOS · Windows"]
-  A["FastAPI local/self-hosted API"]
-  D[("SQLite + local resource storage")]
-  P["AIProvider"]
-  T["TranscriptionProvider"]
-  X["PDF / PPTX parser"]
-  C -->|"REST · explicit upload consent"| A
-  A --> D
-  A --> P
-  A --> T
-  A --> X
+  B["浏览器 · Next.js"] -->|"同源 /api/backend"| A["FastAPI · 编排与证据校验"]
+  A --> D[("SQLite 开发 / PostgreSQL 部署")]
+  A --> S["本地或 S3 兼容存储"]
+  A --> P["AI / ASR Provider"]
+  A --> E["本地 Hash 或外部 Embedding Provider"]
 ```
 
-The backend stores structured domain objects, not one large Markdown result. See [`backend/app/database.py`](backend/app/database.py) for the schema and [`backend/app/providers/base.py`](backend/app/providers/base.py) for provider contracts.
+默认自托管形态是“薄后端”：服务端运行领域逻辑、校验、检索与存储；高成本 AI / ASR 可以在用户对本次具体操作明确授权后调用外部 Provider。需要全本地推理时，可以通过相同 Provider 接口扩展，而不必改写核心业务。
 
-## Screenshots
+## 本地开发
 
-<p align="center">
-  <img src="docs/screenshots/android-onboarding.png" width="30%" alt="KnowledgeDebt onboarding">
-  <img src="docs/screenshots/android-home.png" width="30%" alt="Debt-first home">
-  <img src="docs/screenshots/android-session-detail.png" width="30%" alt="Course Session detail">
-</p>
-
-## Getting started
-
-Requirements:
-
-- Flutter stable 3.35+ (the current repository was verified with Flutter 3.47 / Dart 3.13)
-- Python 3.12+
-- platform toolchains for the targets you intend to build
+需要 Python 3.12+、Node.js 24+、npm 11+。
 
 ```bash
 git clone https://github.com/HanzhiOvO/KnowledgeDebt.git
 cd KnowledgeDebt
-python3 -m venv .venv
-.venv/bin/pip install -r backend/requirements-dev.txt
+make backend-install
+make web-install
 cp .env.example .env
+make dev
 ```
 
-Configure `.env`, then start the API:
+打开 `http://localhost:3000`；API 位于 `http://127.0.0.1:8123`。不配置 `KNOWLEDGEDEBT_DATABASE_URL` 时自动使用 SQLite，不需要单独安装数据库服务。
 
-```bash
-make backend-run
-```
-
-In another terminal:
-
-```bash
-cd client
-flutter pub get
-flutter run
-```
-
-The default endpoint is `http://127.0.0.1:8123` on desktop/iOS and `http://10.0.2.2:8123` on the Android emulator. It can be changed in Settings. For a physical phone, use a reachable LAN address and review your firewall.
-
-## AI and ASR configuration
+若要使用真实托管分析与转写，在 `.env` 至少设置：
 
 ```dotenv
 OPENAI_API_KEY=your-key
@@ -118,63 +77,81 @@ KNOWLEDGEDEBT_AI_MODEL=gpt-5-mini
 KNOWLEDGEDEBT_ASR_MODEL=gpt-4o-mini-transcribe
 ```
 
-Keys stay in the backend environment and are never returned to the Flutter client. The implementation uses OpenAI-compatible Chat Completions structured output and audio transcription endpoints. Provider contracts are separate from the application service so another hosted or local implementation can be added without changing the domain pipeline.
+默认 Embedding Provider 为本地确定性 `hash` 实现，因此上传文档不会静默外传文本。外部 Embedding 只会在一次明确同意的索引操作中调用。
 
-## Privacy
-
-Record only when allowed by local law, university policy, course rules, and the people involved. Obtain permission when required.
-
-- recordings begin locally and use safety segments;
-- attaching a recording clearly identifies the configured backend destination;
-- AI/ASR actions show a separate consent prompt;
-- `.env`, databases, and common media formats are ignored by Git;
-- resource content and API keys are not written to application logs.
-
-Self-hosting the backend is recommended for sensitive course material. “Local-first” does not mean “nothing can ever leave the device”; the UI makes the boundary visible before it does.
-
-## Verification
+## Docker Compose 部署
 
 ```bash
+cp .env.example .env
+# 在 .env 设置强 POSTGRES_PASSWORD；若服务不只监听本机，
+# 同时设置强 KNOWLEDGEDEBT_ACCESS_TOKEN。
+docker compose up --build
+```
+
+打开 `http://localhost:3000`。PostgreSQL 与资源文件使用命名卷，API 的 `8123` 端口只绑定回环地址。更多细节见[部署指南](docs/deployment.md)。
+
+## 隐私边界
+
+每次外部调用的确认框都会列出：操作类型、Provider、涉及的具体资源、将发送什么、不会发送什么。授权只对这一次操作有效，不保存为全局同意。
+
+- API Key 与可选访问令牌只保存在服务端环境变量；
+- 浏览器写操作通过 Next.js 同源代理；
+- 只有转写所选媒体时才发送原始音视频；
+- 分析与验收发送检索出的文本 / 转写片段，不发送原始媒体二进制；
+- 外部 Embedding 默认关闭，上传动作绝不会自动调用；
+- 模型返回的资源 ID、时间戳、PDF 页、PPT 页和 Chunk 都必须通过服务端证据校验。
+
+录制课堂仍需遵守所在地法律、学校规定、课程规则与现场其他人的合理预期；需要时必须先取得授权。详见[隐私模型](docs/privacy.md)。
+
+## 运行测试
+
+安装全部依赖并运行主验证：
+
+```bash
+make backend-install
+make web-install
 make verify
 ```
 
-The backend integration test executes:
+也可以分别运行：
 
-```text
-Course → Session → Resource → Reconstruction → Knowledge Point → Debt
-→ targeted remediation → Question → semantic evaluation → Mastery → Session complete
+```bash
+make backend-lint   # Ruff
+make backend-test   # Pytest
+make web-test       # ESLint + TypeScript + Next.js 生产构建
+make migrate        # Alembic 升级到最新版本
 ```
 
-Local verification on 2026-08-15:
+测试套件会现场生成结构真实的 90 分钟 WAV、40 页 PPTX 与 80 页 PDF，并完整经过 multipart 上传、文档解析、本地索引、带时间戳转写、双策略检索、课堂还原、针对性补课、自适应验收、MasteryEvidence 聚合、依赖更新与 Session 清债。CI 还会在 PostgreSQL 16 上执行 Alembic 和仓储查询流程。
 
-- Android debug APK: built and installed successfully on an API 36 ARM64 emulator
-- Android app: onboarding, API connection, empty state, debt-first home, and Session detail launched and visually inspected
-- Flutter analyze / widget test: passed
-- FastAPI process smoke test / Ruff / Pytest: passed
-- macOS and iOS builds: not run because the available Xcode installation is incomplete and CocoaPods is absent
-- Windows build: not run because this environment is macOS
-- live hosted AI/ASR call: not run because no API key was supplied; the real provider implementation is covered through its contract and deterministic integration provider
+旧 Flutter 检查仍可通过 `make legacy-client-test` 运行，但开发主 Web 产品不需要 Flutter。
 
-## Roadmap
+## 项目目录
 
-**Done:** the usable learning-debt loop described above, provider abstraction, privacy gates, tests, four-platform project scaffolding, and CI.
+```text
+web/                    Next.js 主客户端
+backend/app/            FastAPI 领域、Provider、检索、存储与数据库
+backend/alembic/        版本化数据库迁移
+backend/tests/          单元、集成、迁移与现实规模 E2E
+legacy/flutter-client/  保留的实验性原生原型
+docs/                   架构、隐私、部署与迁移说明
+compose.yaml            Web + API + PostgreSQL 部署
+```
 
-**In progress:** real-device UX validation, richer audio timeline playback, source-page preview, and resilient background recording on every OS version.
+## 当前状态与方向
 
-**Planned:** optional local Whisper/LLM providers, learned Course Profiles, richer dependency-aware daily minimum planning, sync, and accessibility/localization polish.
+现在已经完成：知识债务全闭环、证据定位校验、自适应掌握度、后台 Job、Provider / Storage 边界、Web-first UI、PostgreSQL 部署路径和跨层自动化验收。
 
-Not currently implemented: social features, school-system login, web crawling, payments, a public question bank, or a teacher product.
+后续适合推进：学习页的来源原页预览、更完整的录音播放、面向大资料库的 pgvector 检索、可选本地 Whisper / LLM、无障碍与本地化，以及独立的托管多用户身份方案。
 
-## Vibe Coding
+当前不承诺：社交网络、公共题库、教务系统集成、支付或教师管理产品。
 
-KnowledgeDebt is an open-source experimental project built through a vibe-coding workflow. Product vision, requirements, architecture discussions, and substantial implementation work are collaboratively driven by a human creator and AI coding agents. It is AI-assisted development with human-directed product design, not an attempt to hide AI involvement or substitute claims for verification.
+## Vibe Coding 声明
 
-Project owner: **HanzhiOvO**
+KnowledgeDebt 是通过 Vibe Coding 工作流构建的开源实验项目。产品意图、需求、架构决策、实现与验证由人类创作者和 AI Coding Agent 协作完成。这是在人类产品所有权下进行的 AI-assisted engineering，并公开保留可验证的工程结果。
 
-## Contributing
+项目 Owner：**HanzhiOvO**
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Please preserve the three product invariants: a Session is not a recording; debt means required but not yet mastered; only assessment can clear debt.
+## 贡献与许可
 
-## License
-
-[MIT](LICENSE)
+修改产品模型或数据结构前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。KnowledgeDebt 使用 [MIT License](LICENSE)。

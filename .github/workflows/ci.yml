@@ -6,8 +6,40 @@ on:
   pull_request:
 
 jobs:
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+
   backend:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: knowledgedebt
+          POSTGRES_USER: knowledgedebt
+          POSTGRES_PASSWORD: test-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U knowledgedebt"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_POSTGRES_URL: postgresql://knowledgedebt:test-password@127.0.0.1:5432/knowledgedebt
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -18,10 +50,14 @@ jobs:
       - run: pip install -r backend/requirements-dev.txt
       - run: ruff check .
         working-directory: backend
+      - run: python -m alembic -c alembic.ini upgrade head
+        working-directory: backend
+        env:
+          KNOWLEDGEDEBT_DATABASE_URL: postgresql://knowledgedebt:test-password@127.0.0.1:5432/knowledgedebt
       - run: python -m pytest -q
         working-directory: backend
 
-  flutter:
+  legacy-flutter:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,8 +66,8 @@ jobs:
           channel: stable
           cache: true
       - run: flutter pub get
-        working-directory: client
+        working-directory: legacy/flutter-client
       - run: flutter analyze
-        working-directory: client
+        working-directory: legacy/flutter-client
       - run: flutter test
-        working-directory: client
+        working-directory: legacy/flutter-client
