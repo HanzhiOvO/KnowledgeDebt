@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from .models import DebtStatus
+from .models import DEFAULT_PROFILE, DebtStatus
 
 LEARNING_UTILITY = {
     "audio": 0.45,
@@ -17,19 +17,119 @@ LEARNING_UTILITY = {
 }
 
 
-def reconstruction_score(resources: Iterable[dict], profile: dict[str, float]) -> int:
-    """Evidence-weighted score; duplicate resource types saturate instead of stacking."""
-    best_by_type: dict[str, float] = {}
-    for resource in resources:
-        kind = resource["type"]
-        contribution = (
-            float(resource.get("coverage", 0.0))
-            * float(resource.get("quality", 0.0))
-            * float(resource.get("relevance", 0.0))
+def _bounded(value: object, default: float = 0.0) -> float:
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def evidence_channel(resource: dict) -> str:
+    """Map a resource to one reconstruction channel without double counting its type."""
+    level = resource.get("evidence_level")
+    kind = resource.get("type")
+    if level == "classroom":
+        return "classroom"
+    if level == "official" and kind in {"slides", "assignment", "note", "audio", "video"}:
+        return "official_session"
+    if level == "official":
+        return "course_context"
+    return "supplementary"
+
+
+def recording_union_effective(resources: Iterable[dict]) -> float:
+    """Integrate the best recording quality over the union of Session time ranges.
+
+    Overlap is counted once. Quality and relevance are applied to the interval that
+    supplied them, so three high-quality chunks covering 80 of 100 minutes produce
+    0.8 rather than three independent full-audio contributions.
+    """
+    recordings = list(resources)
+    session_duration = max(
+        (float(item.get("session_duration") or 0) for item in recordings),
+        default=0.0,
+    )
+    ranges: list[tuple[float, float, float]] = []
+    for item in recordings:
+        start = item.get("start_offset")
+        end = item.get("end_offset")
+        if start is None or end is None:
+            continue
+        start_value, end_value = float(start), float(end)
+        if session_duration <= 0 or start_value < 0 or end_value <= start_value:
+            continue
+        end_value = min(end_value, session_duration)
+        if end_value <= start_value:
+            continue
+        confidence = _bounded(item.get("quality"), 1.0) * _bounded(item.get("relevance"), 1.0)
+        ranges.append((start_value, end_value, confidence))
+    if not ranges or session_duration <= 0:
+        return max(
+            (
+                _bounded(item.get("coverage"), 0.0)
+                * _bounded(item.get("quality"), 1.0)
+                * _bounded(item.get("relevance"), 1.0)
+                for item in recordings
+            ),
+            default=0.0,
         )
-        best_by_type[kind] = max(best_by_type.get(kind, 0.0), contribution)
-    raw = sum(float(profile.get(kind, 0)) * factor for kind, factor in best_by_type.items())
-    return max(0, min(100, round(raw)))
+
+    boundaries = sorted({point for start, end, _ in ranges for point in (start, end)})
+    effective_seconds = 0.0
+    for left, right in zip(boundaries, boundaries[1:], strict=False):
+        if right <= left:
+            continue
+        confidence = max(
+            (quality for start, end, quality in ranges if start < right and end > left),
+            default=0.0,
+        )
+        effective_seconds += (right - left) * confidence
+    return _bounded(effective_seconds / session_duration)
+
+
+def _channel_effective(resources: list[dict]) -> float:
+    factors: list[float] = []
+    timed_recordings = [
+        item
+        for item in resources
+        if item.get("type") in {"audio", "video"}
+        and item.get("start_offset") is not None
+        and item.get("end_offset") is not None
+        and item.get("session_duration")
+    ]
+    if timed_recordings:
+        factors.append(recording_union_effective(timed_recordings))
+
+    for resource in resources:
+        if resource in timed_recordings:
+            continue
+        factors.append(
+            _bounded(resource.get("coverage"), 0.0)
+            * _bounded(resource.get("quality"), 1.0)
+            * _bounded(resource.get("relevance"), 1.0)
+        )
+
+    remaining_gap = 1.0
+    for factor in factors:
+        remaining_gap *= 1.0 - _bounded(factor)
+    return 1.0 - remaining_gap
+
+
+def reconstruction_score(resources: Iterable[dict], profile: dict[str, float]) -> int:
+    """Score four bounded evidence channels whose configured weights total 100."""
+    grouped = {channel: [] for channel in DEFAULT_PROFILE}
+    for resource in resources:
+        grouped[evidence_channel(resource)].append(resource)
+    weights = profile if set(DEFAULT_PROFILE).issubset(profile) else DEFAULT_PROFILE
+    total_weight = sum(max(0.0, float(weights.get(channel, 0.0))) for channel in DEFAULT_PROFILE)
+    if total_weight <= 0:
+        return 0
+    raw = sum(
+        (max(0.0, float(weights.get(channel, 0.0))) / total_weight)
+        * _channel_effective(grouped[channel])
+        for channel in DEFAULT_PROFILE
+    )
+    return round(_bounded(raw) * 100)
 
 
 def learning_coverage(resources: Iterable[dict]) -> int:
@@ -37,13 +137,16 @@ def learning_coverage(resources: Iterable[dict]) -> int:
     remaining_gap = 1.0
     for resource in resources:
         utility = LEARNING_UTILITY.get(resource["type"], LEARNING_UTILITY["other"])
-        effective = min(
-            0.92,
-            utility
-            * float(resource.get("coverage", 0.0))
-            * float(resource.get("quality", 0.0))
-            * float(resource.get("relevance", 0.0)),
-        )
+        if resource.get("type") in {"audio", "video"} and resource.get("session_duration"):
+            effective = min(0.92, utility * recording_union_effective([resource]))
+        else:
+            effective = min(
+                0.92,
+                utility
+                * _bounded(resource.get("coverage"), 0.0)
+                * _bounded(resource.get("quality"), 1.0)
+                * _bounded(resource.get("relevance"), 1.0),
+            )
         remaining_gap *= 1.0 - effective
     return max(0, min(100, round((1.0 - remaining_gap) * 100)))
 

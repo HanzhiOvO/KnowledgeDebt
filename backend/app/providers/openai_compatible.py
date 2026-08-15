@@ -16,6 +16,7 @@ T = TypeVar("T", bound=BaseModel)
 SYSTEM_RULES = """You are the analysis engine for KnowledgeDebt, a university learning recovery tool.
 Never claim supplementary or inferred material was taught in class. Preserve source references and evidence levels.
 Stay within the supplied course evidence. Build a path that can teach a completely absent student from zero.
+Never invent a timestamp, page, slide, chunk, or resource locator. Timeline timestamps must cite supplied transcript segments using locator_type=transcript and the segment's global_start/global_end values.
 Mastery questions must test only the supplied course requirements and should take 3-5 minutes in total.
 Return valid JSON only, matching the requested schema exactly. Do not use markdown fences."""
 
@@ -70,7 +71,16 @@ class OpenAICompatibleProvider:
     def _evidence_text(evidence: list[dict]) -> str:
         chunks = []
         for item in evidence:
-            text = item.get("extracted_text", "")[:20000]
+            segments = [
+                {
+                    "id": segment["id"],
+                    "resource_id": item["id"],
+                    "global_start": segment["global_start"],
+                    "global_end": segment["global_end"],
+                    "text": segment["text"],
+                }
+                for segment in item.get("transcript_segments", [])
+            ]
             chunks.append(
                 json.dumps(
                     {
@@ -78,7 +88,8 @@ class OpenAICompatibleProvider:
                         "name": item["name"],
                         "type": item["type"],
                         "evidence_level": item["evidence_level"],
-                        "text": text,
+                        "transcript_segments": segments,
+                        "text": "" if segments else item.get("extracted_text", "")[:20000],
                     },
                     ensure_ascii=False,
                 )
@@ -88,7 +99,7 @@ class OpenAICompatibleProvider:
     async def analyze_session(self, session: dict, evidence: list[dict]) -> ReconstructionDraft:
         prompt = f"""Analyze this Course Session and produce BOTH a classroom reconstruction and a distinct from-zero learning path.
 The reconstruction answers what probably happened; the learning path answers how to genuinely learn it.
-If evidence is insufficient, say so through inferred items and conservative confidence. SourceRef.resource_id must match supplied IDs.
+If evidence is insufficient, say so through inferred items and conservative confidence. SourceRef.resource_id and every structured locator must match supplied evidence exactly.
 Session: {json.dumps({k: session.get(k) for k in ("title", "starts_at", "ends_at", "notes")}, ensure_ascii=False)}
 Evidence (ordered by trust, classroom > official > supplementary):
 {self._evidence_text(evidence)}

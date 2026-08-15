@@ -112,6 +112,12 @@ def create_app(
 
         return JSONResponse(status_code=502, content={"detail": str(exc)})
 
+    @app.exception_handler(ValueError)
+    async def validation_handler(_, exc: ValueError):
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+
     @app.get("/health")
     def health() -> dict:
         return {"status": "ok", "version": "0.1.0"}
@@ -167,9 +173,25 @@ def create_app(
         quality: float = Form(1.0),
         relevance: float = Form(1.0),
         duration_seconds: float | None = Form(None),
+        start_offset: float | None = Form(None),
+        end_offset: float | None = Form(None),
+        session_duration: float | None = Form(None),
     ) -> dict:
         if not all(0 <= value <= 1 for value in (coverage, quality, relevance)):
             raise HTTPException(status_code=422, detail="coverage, quality and relevance must be between 0 and 1")
+        if duration_seconds is not None and duration_seconds <= 0:
+            raise HTTPException(status_code=422, detail="duration_seconds must be positive")
+        if start_offset is not None and start_offset < 0:
+            raise HTTPException(status_code=422, detail="start_offset cannot be negative")
+        if end_offset is None and start_offset is not None and duration_seconds is not None:
+            end_offset = start_offset + duration_seconds
+        if end_offset is not None and (start_offset is None or end_offset <= start_offset):
+            raise HTTPException(status_code=422, detail="end_offset must be after start_offset")
+        if session_duration is not None and session_duration <= 0:
+            raise HTTPException(status_code=422, detail="session_duration must be positive")
+        if session_duration is not None and end_offset is not None and end_offset > session_duration:
+            raise HTTPException(status_code=422, detail="capture range cannot exceed session_duration")
+        capture_range = [start_offset, end_offset] if start_offset is not None and end_offset is not None else []
         directory = settings.data_dir / "resources" / session_id
         directory.mkdir(parents=True, exist_ok=True)
         target = directory / f"{uuid.uuid4().hex}_{_safe_name(file.filename or 'resource')}"
@@ -200,6 +222,10 @@ def create_app(
             quality=quality,
             relevance=relevance,
             duration_seconds=duration_seconds,
+            start_offset=start_offset,
+            end_offset=end_offset,
+            session_duration=session_duration,
+            capture_range=capture_range,
         )
         reconstruction, learning = service.refresh_scores(session_id)
         resource["session_scores"] = {"reconstruction": reconstruction, "learning_coverage": learning}
@@ -235,7 +261,7 @@ def create_app(
         segments = await service.asr.transcribe(resource["local_path"], resource["mime_type"])
         database.save_transcript(resource_id, [item.model_dump() for item in segments])
         service.refresh_scores(resource["session_id"])
-        return {"resource_id": resource_id, "segments": [item.model_dump() for item in segments]}
+        return {"resource_id": resource_id, "segments": database.list_transcript_segments(resource_id)}
 
     @app.post("/sessions/{session_id}/analyze")
     async def analyze(session_id: str, payload: AnalysisRequest) -> dict:

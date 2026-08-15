@@ -4,8 +4,9 @@ from app.models import DEFAULT_PROFILE, CourseCreate, ReconstructionDraft
 def test_course_profile_is_not_shared_between_models():
     first = CourseCreate(name="Calculus")
     second = CourseCreate(name="Physics")
-    first.profile["audio"] = 1
-    assert second.profile["audio"] == DEFAULT_PROFILE["audio"]
+    first.profile["classroom"] = 1
+    assert second.profile["classroom"] == DEFAULT_PROFILE["classroom"]
+    assert sum(DEFAULT_PROFILE.values()) == 100
 
 
 def test_structured_analysis_round_trip():

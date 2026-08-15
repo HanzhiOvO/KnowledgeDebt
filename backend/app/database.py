@@ -30,11 +30,15 @@ CREATE TABLE IF NOT EXISTS resources (
   local_path TEXT, external_url TEXT, extracted_text TEXT NOT NULL DEFAULT '',
   coverage REAL NOT NULL DEFAULT 1, quality REAL NOT NULL DEFAULT 1,
   relevance REAL NOT NULL DEFAULT 1, duration_seconds REAL,
+  start_offset REAL, end_offset REAL, session_duration REAL,
+  capture_range_json TEXT NOT NULL DEFAULT '[]',
   upload_state TEXT NOT NULL DEFAULT 'local_only', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS transcript_segments (
   id TEXT PRIMARY KEY, resource_id TEXT NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
-  start_time REAL NOT NULL, end_time REAL NOT NULL, text TEXT NOT NULL, created_at TEXT NOT NULL
+  start_time REAL NOT NULL, end_time REAL NOT NULL,
+  global_start REAL NOT NULL, global_end REAL NOT NULL,
+  text TEXT NOT NULL, created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS reconstructions (
   id TEXT PRIMARY KEY, session_id TEXT NOT NULL UNIQUE REFERENCES sessions(id) ON DELETE CASCADE,
@@ -107,6 +111,46 @@ class Database:
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            self._migrate_legacy_schema(conn)
+
+    @staticmethod
+    def _migrate_legacy_schema(conn: sqlite3.Connection) -> None:
+        resource_columns = {row["name"] for row in conn.execute("PRAGMA table_info(resources)")}
+        resource_migrations = {
+            "start_offset": "ALTER TABLE resources ADD COLUMN start_offset REAL",
+            "end_offset": "ALTER TABLE resources ADD COLUMN end_offset REAL",
+            "session_duration": "ALTER TABLE resources ADD COLUMN session_duration REAL",
+            "capture_range_json": "ALTER TABLE resources ADD COLUMN capture_range_json TEXT NOT NULL DEFAULT '[]'",
+        }
+        for column, statement in resource_migrations.items():
+            if column not in resource_columns:
+                conn.execute(statement)
+
+        transcript_columns = {row["name"] for row in conn.execute("PRAGMA table_info(transcript_segments)")}
+        if "global_start" not in transcript_columns:
+            conn.execute("ALTER TABLE transcript_segments ADD COLUMN global_start REAL")
+        if "global_end" not in transcript_columns:
+            conn.execute("ALTER TABLE transcript_segments ADD COLUMN global_end REAL")
+        conn.execute(
+            """
+            UPDATE transcript_segments
+            SET global_start = start_time + COALESCE(
+                  (SELECT start_offset FROM resources WHERE resources.id = transcript_segments.resource_id), 0
+                ),
+                global_end = end_time + COALESCE(
+                  (SELECT start_offset FROM resources WHERE resources.id = transcript_segments.resource_id), 0
+                )
+            WHERE global_start IS NULL OR global_end IS NULL
+            """
+        )
+
+        for row in conn.execute("SELECT id, profile_json FROM courses").fetchall():
+            profile = json.loads(row["profile_json"])
+            if not set(DEFAULT_PROFILE).issubset(profile):
+                conn.execute(
+                    "UPDATE courses SET profile_json=?, updated_at=? WHERE id=?",
+                    (json.dumps(DEFAULT_PROFILE), utc_now(), row["id"]),
+                )
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -155,6 +199,9 @@ class Database:
         course = self.get_course(course_id)
         merged = course["profile"]
         merged.update(profile)
+        total = sum(merged.get(channel, 0.0) for channel in DEFAULT_PROFILE)
+        if abs(total - 100.0) > 1e-6:
+            raise ValueError("evidence channel weights must total 100")
         with self.connect() as conn:
             conn.execute(
                 "UPDATE courses SET profile_json=?, updated_at=? WHERE id=?",
@@ -210,6 +257,10 @@ class Database:
             "quality": values.get("quality", 1.0),
             "relevance": values.get("relevance", 1.0),
             "duration_seconds": values.get("duration_seconds"),
+            "start_offset": values.get("start_offset"),
+            "end_offset": values.get("end_offset"),
+            "session_duration": values.get("session_duration"),
+            "capture_range_json": json.dumps(values.get("capture_range", [])),
             "upload_state": "local_only",
             "created_at": now,
             "updated_at": now,
@@ -226,12 +277,25 @@ class Database:
             row = conn.execute("SELECT * FROM resources WHERE id = ?", (resource_id,)).fetchone()
         if not row:
             raise KeyError("resource")
-        return _decode(row)  # type: ignore[return-value]
+        result = _decode(row)  # type: ignore[assignment]
+        result["transcript_segments"] = self.list_transcript_segments(resource_id)
+        return result  # type: ignore[return-value]
 
     def list_resources(self, session_id: str) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM resources WHERE session_id = ? ORDER BY created_at", (session_id,)
+            ).fetchall()
+        resources = [_decode(row) for row in rows]  # type: ignore[misc]
+        for resource in resources:
+            resource["transcript_segments"] = self.list_transcript_segments(resource["id"])
+        return resources
+
+    def list_transcript_segments(self, resource_id: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM transcript_segments WHERE resource_id=? ORDER BY global_start, start_time",
+                (resource_id,),
             ).fetchall()
         return [_decode(row) for row in rows]  # type: ignore[misc]
 
@@ -246,12 +310,28 @@ class Database:
         return self.get_resource(resource_id)
 
     def save_transcript(self, resource_id: str, segments: list[dict[str, Any]]) -> None:
+        resource = self.get_resource(resource_id)
+        offset = float(resource.get("start_offset") or 0.0)
         now = utc_now()
         with self.connect() as conn:
             conn.execute("DELETE FROM transcript_segments WHERE resource_id = ?", (resource_id,))
             conn.executemany(
-                "INSERT INTO transcript_segments VALUES (?, ?, ?, ?, ?, ?)",
-                [(_id(), resource_id, s["start_time"], s["end_time"], s["text"], now) for s in segments],
+                """INSERT INTO transcript_segments
+                   (id, resource_id, start_time, end_time, global_start, global_end, text, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                [
+                    (
+                        _id(),
+                        resource_id,
+                        s["start_time"],
+                        s["end_time"],
+                        offset + s["start_time"],
+                        offset + s["end_time"],
+                        s["text"],
+                        now,
+                    )
+                    for s in segments
+                ],
             )
             text = "\n".join(s["text"] for s in segments)
             conn.execute(

@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 def utc_now() -> str:
@@ -43,17 +43,19 @@ class DebtStatus(StrEnum):
 
 
 DEFAULT_PROFILE = {
-    "audio": 35.0,
-    "video": 35.0,
-    "slides": 25.0,
-    "textbook": 20.0,
-    "assignment": 5.0,
-    "syllabus": 5.0,
-    "history": 5.0,
-    "link": 5.0,
-    "note": 15.0,
-    "other": 5.0,
+    "classroom": 40.0,
+    "official_session": 35.0,
+    "course_context": 15.0,
+    "supplementary": 10.0,
 }
+
+
+class LocatorType(StrEnum):
+    TRANSCRIPT = "transcript"
+    PAGE = "page"
+    SLIDE = "slide"
+    CHUNK = "chunk"
+    URL = "url"
 
 
 class CourseCreate(BaseModel):
@@ -63,6 +65,15 @@ class CourseCreate(BaseModel):
     teacher: str | None = None
     schedule: str | None = None
     profile: dict[str, float] = Field(default_factory=lambda: DEFAULT_PROFILE.copy())
+
+    @field_validator("profile")
+    @classmethod
+    def validate_profile(cls, value: dict[str, float]) -> dict[str, float]:
+        if set(value) != set(DEFAULT_PROFILE):
+            raise ValueError(f"profile must contain exactly these evidence channels: {', '.join(DEFAULT_PROFILE)}")
+        if any(weight < 0 or weight > 100 for weight in value.values()) or abs(sum(value.values()) - 100) > 1e-6:
+            raise ValueError("evidence channel weights must be between 0 and 100 and total 100")
+        return value
 
 
 class SessionCreate(BaseModel):
@@ -78,7 +89,9 @@ class CourseProfileUpdate(BaseModel):
     @field_validator("profile")
     @classmethod
     def validate_profile(cls, value: dict[str, float]) -> dict[str, float]:
-        if not value or any(weight < 0 or weight > 100 for weight in value.values()):
+        if not value or any(key not in DEFAULT_PROFILE for key in value):
+            raise ValueError(f"profile keys must be evidence channels: {', '.join(DEFAULT_PROFILE)}")
+        if any(weight < 0 or weight > 100 for weight in value.values()):
             raise ValueError("profile weights must be between 0 and 100")
         return value
 
@@ -87,12 +100,43 @@ class SourceRef(BaseModel):
     resource_id: str
     label: str
     locator: str | None = None
+    locator_type: LocatorType | None = None
+    start_time: float | None = Field(default=None, ge=0)
+    end_time: float | None = Field(default=None, ge=0)
+    page: int | None = Field(default=None, ge=1)
+    slide: int | None = Field(default=None, ge=1)
+    chunk_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_locator_shape(self) -> SourceRef:
+        if self.locator_type == LocatorType.TRANSCRIPT:
+            if self.start_time is None or self.end_time is None or self.end_time <= self.start_time:
+                raise ValueError("transcript locators require an increasing start_time and end_time")
+        elif self.locator_type == LocatorType.PAGE and self.page is None:
+            raise ValueError("page locators require page")
+        elif self.locator_type == LocatorType.SLIDE and self.slide is None:
+            raise ValueError("slide locators require slide")
+        elif self.locator_type == LocatorType.CHUNK and not self.chunk_id:
+            raise ValueError("chunk locators require chunk_id")
+        return self
 
 
 class TranscriptSegment(BaseModel):
+    id: str | None = None
+    resource_id: str | None = None
     start_time: float = 0
     end_time: float = 0
+    global_start: float | None = None
+    global_end: float | None = None
     text: str
+
+    @model_validator(mode="after")
+    def validate_times(self) -> TranscriptSegment:
+        if self.end_time < self.start_time:
+            raise ValueError("transcript end_time must be after start_time")
+        if self.global_start is not None and self.global_end is not None and self.global_end < self.global_start:
+            raise ValueError("transcript global_end must be after global_start")
+        return self
 
 
 class TimelineItem(BaseModel):

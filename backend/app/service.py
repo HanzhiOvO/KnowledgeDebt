@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from .database import Database
 from .providers.base import AIProvider, ProviderOutputError, TranscriptionProvider
 from .scoring import debt_status, learning_coverage, reconstruction_score, update_mastery
@@ -25,7 +27,8 @@ class KnowledgeService:
         evidence = session["resources"]
         result = await self.ai.analyze_session(session, evidence)
         payload = result.model_dump(mode="json")
-        self._validate_source_ids(payload, evidence)
+        self._validate_sources(payload, evidence)
+        self._validate_timeline(payload, evidence)
         self.db.save_analysis(session_id, payload)
         self.refresh_scores(session_id)
         return self.db.get_session(session_id)
@@ -41,7 +44,7 @@ class KnowledgeService:
             expected = allowed_points.get(question.knowledge_point_title)
             if expected is None or question.expected_mastery_level > expected:
                 raise ProviderOutputError("Provider returned an out-of-scope assessment question")
-        self._validate_source_ids([q.model_dump(mode="json") for q in questions], session["resources"])
+        self._validate_sources([q.model_dump(mode="json") for q in questions], session["resources"])
         return self.db.replace_questions(session_id, [q.model_dump(mode="json") for q in questions])
 
     async def evaluate(self, question_id: str, answer: str) -> dict:
@@ -59,17 +62,47 @@ class KnowledgeService:
         point = self.db.get_knowledge_point(point_id)
         session = self.db.get_session(point["source_session_id"])
         draft = await self.ai.remediate(point, reason, session["resources"])
-        self._validate_source_ids(draft.model_dump(mode="json"), session["resources"])
+        self._validate_sources(draft.model_dump(mode="json"), session["resources"])
         return self.db.save_remediation(point_id, reason, draft.model_dump(mode="json"))
 
     @staticmethod
-    def _validate_source_ids(payload: object, evidence: list[dict]) -> None:
-        allowed = {item["id"] for item in evidence}
+    def _validate_sources(payload: object, evidence: list[dict]) -> None:
+        allowed = {item["id"]: item for item in evidence}
+
+        def validate_reference(value: dict) -> None:
+            resource = allowed.get(value.get("resource_id"))
+            if resource is None:
+                raise ProviderOutputError("Provider returned a source reference that was not supplied")
+            locator_type = value.get("locator_type")
+            if locator_type == "transcript":
+                start, end = value.get("start_time"), value.get("end_time")
+                if start is None or end is None:
+                    raise ProviderOutputError("Transcript source reference is missing its time range")
+                matches = [
+                    segment
+                    for segment in resource.get("transcript_segments", [])
+                    if abs(float(segment["global_start"]) - float(start)) < 1e-3
+                    and abs(float(segment["global_end"]) - float(end)) < 1e-3
+                ]
+                if not matches:
+                    raise ProviderOutputError("Provider returned a transcript time range that does not exist")
+            elif locator_type == "page":
+                pages = {int(item) for item in re.findall(r"\[PDF page (\d+)\]", resource.get("extracted_text", ""))}
+                if value.get("page") not in pages:
+                    raise ProviderOutputError("Provider returned a PDF page that does not exist")
+            elif locator_type == "slide":
+                slides = {int(item) for item in re.findall(r"\[PPT slide (\d+)\]", resource.get("extracted_text", ""))}
+                if value.get("slide") not in slides:
+                    raise ProviderOutputError("Provider returned a slide that does not exist")
+            elif locator_type == "chunk":
+                chunk_ids = {item["id"] for item in resource.get("chunks", [])}
+                if value.get("chunk_id") not in chunk_ids:
+                    raise ProviderOutputError("Provider returned a document chunk that does not exist")
 
         def visit(value: object) -> None:
             if isinstance(value, dict):
-                if "resource_id" in value and value["resource_id"] not in allowed:
-                    raise ProviderOutputError("Provider returned a source reference that was not supplied")
+                if "resource_id" in value:
+                    validate_reference(value)
                 for child in value.values():
                     visit(child)
             elif isinstance(value, list):
@@ -77,3 +110,23 @@ class KnowledgeService:
                     visit(child)
 
         visit(payload)
+
+    @classmethod
+    def _validate_timeline(cls, payload: dict, evidence: list[dict]) -> None:
+        for item in payload.get("timeline", []):
+            start, end = item.get("start_time"), item.get("end_time")
+            if start is None and end is None:
+                continue
+            if start is None or end is None or end <= start:
+                raise ProviderOutputError("Timeline item has an invalid time range")
+            transcript_refs = [
+                source
+                for source in item.get("sources", [])
+                if source.get("locator_type") == "transcript"
+            ]
+            if not any(
+                abs(float(source["start_time"]) - float(start)) < 1e-3
+                and abs(float(source["end_time"]) - float(end)) < 1e-3
+                for source in transcript_refs
+            ):
+                raise ProviderOutputError("Timeline timestamps must match a cited transcript segment")
