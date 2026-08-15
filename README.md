@@ -2,6 +2,10 @@
 
 > **课堂可以缺席，知识不能欠账。**
 
+[![持续集成](https://github.com/HanzhiOvO/KnowledgeDebt/actions/workflows/ci.yml/badge.svg)](https://github.com/HanzhiOvO/KnowledgeDebt/actions/workflows/ci.yml)
+[![许可证：MIT](https://img.shields.io/badge/许可证-MIT-blue.svg)](LICENSE)
+[![状态：0.x 实验版](https://img.shields.io/badge/状态-0.x%20实验版-orange.svg)](#当前状态与方向)
+
 KnowledgeDebt 是一个开源、Web-first 的课程恢复系统，面向“课堂已经发生，但学生尚未真正掌握”的场景。它从录音、课件、教材、笔记等证据中还原一次真实的 **Course Session**，生成带来源的从零学习路径，计算知识债务，并且只在积累足够的掌握证据后清债。
 
 [English](README.en.md) · [部署指南](docs/deployment.md) · [隐私模型](docs/privacy.md) · [数据库迁移](docs/migrations.md) · [架构决策](docs/architecture/0001-web-first-thin-backend.md)
@@ -129,6 +133,7 @@ make migrate        # Alembic 升级到最新版本
 ## 项目目录
 
 ```text
+.github/                中文 Issue / PR 模板与持续集成
 web/                    Next.js 主客户端
 backend/app/            FastAPI 领域、Provider、检索、存储与数据库
 backend/alembic/        版本化数据库迁移
