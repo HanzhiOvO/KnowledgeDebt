@@ -28,11 +28,19 @@ class QuestionList(BaseModel):
 class OpenAICompatibleProvider:
     requires_external_upload = True
 
-    def __init__(self, api_key: str | None, base_url: str, ai_model: str, asr_model: str):
+    def __init__(
+        self,
+        api_key: str | None,
+        base_url: str,
+        ai_model: str,
+        asr_model: str,
+        embedding_model: str = "text-embedding-3-small",
+    ):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.ai_model = ai_model
         self.asr_model = asr_model
+        self.embedding_model = embedding_model
 
     def _headers(self) -> dict[str, str]:
         if not self.api_key:
@@ -68,7 +76,7 @@ class OpenAICompatibleProvider:
         return model_type.model_validate_json(content)
 
     @staticmethod
-    def _evidence_text(evidence: list[dict]) -> str:
+    def _evidence_text(evidence: list[dict], chunk_key: str = "retrieved_chunks") -> str:
         chunks = []
         for item in evidence:
             segments = [
@@ -81,6 +89,16 @@ class OpenAICompatibleProvider:
                 }
                 for segment in item.get("transcript_segments", [])
             ]
+            document_chunks = [
+                {
+                    "chunk_id": chunk["id"],
+                    "locator_type": chunk["locator_type"],
+                    "page": chunk.get("page"),
+                    "slide": chunk.get("slide"),
+                    "text": chunk["text"],
+                }
+                for chunk in item.get(chunk_key, item.get("chunks", []))
+            ]
             chunks.append(
                 json.dumps(
                     {
@@ -89,7 +107,8 @@ class OpenAICompatibleProvider:
                         "type": item["type"],
                         "evidence_level": item["evidence_level"],
                         "transcript_segments": segments,
-                        "text": "" if segments else item.get("extracted_text", "")[:20000],
+                        "document_chunks": document_chunks,
+                        "text": "" if segments or document_chunks else item.get("extracted_text", "")[:4000],
                     },
                     ensure_ascii=False,
                 )
@@ -101,8 +120,10 @@ class OpenAICompatibleProvider:
 The reconstruction answers what probably happened; the learning path answers how to genuinely learn it.
 If evidence is insufficient, say so through inferred items and conservative confidence. SourceRef.resource_id and every structured locator must match supplied evidence exactly.
 Session: {json.dumps({k: session.get(k) for k in ("title", "starts_at", "ends_at", "notes")}, ensure_ascii=False)}
-Evidence (ordered by trust, classroom > official > supplementary):
-{self._evidence_text(evidence)}
+Reconstruction evidence (classroom and official Session evidence ranked first):
+{self._evidence_text(evidence, "reconstruction_chunks")}
+From-zero learning evidence (official textbook, slides, and useful supplements ranked first):
+{self._evidence_text(evidence, "learning_chunks")}
 JSON schema: {json.dumps(ReconstructionDraft.model_json_schema(), ensure_ascii=False)}"""
         return await self._structured(ReconstructionDraft, prompt)
 
@@ -165,3 +186,14 @@ JSON schema: {json.dumps(RemediationDraft.model_json_schema(), ensure_ascii=Fals
             for item in segments
             if item.get("text", "").strip()
         ]
+
+    async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        body = {"model": self.embedding_model, "input": texts}
+        async with httpx.AsyncClient(timeout=180) as client:
+            response = await client.post(f"{self.base_url}/embeddings", headers=self._headers(), json=body)
+            if not response.is_success:
+                raise ProviderRequestError(f"Embedding provider returned HTTP {response.status_code}")
+            payload = response.json()
+        return [item["embedding"] for item in sorted(payload["data"], key=lambda item: item["index"])]

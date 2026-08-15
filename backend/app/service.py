@@ -3,15 +3,25 @@ from __future__ import annotations
 import re
 
 from .database import Database
-from .providers.base import AIProvider, ProviderOutputError, TranscriptionProvider
+from .providers.base import AIProvider, EmbeddingProvider, ProviderOutputError, TranscriptionProvider
+from .providers.hash_embedding import HashEmbeddingProvider
+from .retrieval import RetrievalPolicy, SessionRetriever
 from .scoring import debt_status, learning_coverage, reconstruction_score, update_mastery
 
 
 class KnowledgeService:
-    def __init__(self, db: Database, ai: AIProvider, asr: TranscriptionProvider):
+    def __init__(
+        self,
+        db: Database,
+        ai: AIProvider,
+        asr: TranscriptionProvider,
+        embeddings: EmbeddingProvider | None = None,
+    ):
         self.db = db
         self.ai = ai
         self.asr = asr
+        self.embeddings = embeddings or HashEmbeddingProvider()
+        self.retriever = SessionRetriever(db, self.embeddings)
 
     def refresh_scores(self, session_id: str) -> tuple[int, int]:
         session = self.db.get_session(session_id)
@@ -24,7 +34,12 @@ class KnowledgeService:
 
     async def analyze(self, session_id: str) -> dict:
         session = self.db.get_session(session_id)
-        evidence = session["resources"]
+        query = " ".join((session["title"], session.get("notes", "")))
+        reconstruction_chunks = await self.retriever.retrieve(
+            session_id, query, RetrievalPolicy.RECONSTRUCTION
+        )
+        learning_chunks = await self.retriever.retrieve(session_id, query, RetrievalPolicy.LEARNING)
+        evidence = self._dual_policy_evidence(session["resources"], reconstruction_chunks, learning_chunks)
         result = await self.ai.analyze_session(session, evidence)
         payload = result.model_dump(mode="json")
         self._validate_sources(payload, evidence)
@@ -38,19 +53,26 @@ class KnowledgeService:
         points = session["knowledge_points"]
         if not points:
             raise ValueError("Analyze the session before generating an assessment")
-        questions = await self.ai.generate_questions(session, session["resources"], points)
+        query = " ".join(point["title"] for point in points)
+        chunks = await self.retriever.retrieve(session_id, query, RetrievalPolicy.LEARNING)
+        evidence = self.retriever.attach_to_resources(session["resources"], chunks)
+        questions = await self.ai.generate_questions(session, evidence, points)
         allowed_points = {point["title"]: point["expected_mastery"] for point in points}
         for question in questions:
             expected = allowed_points.get(question.knowledge_point_title)
             if expected is None or question.expected_mastery_level > expected:
                 raise ProviderOutputError("Provider returned an out-of-scope assessment question")
-        self._validate_sources([q.model_dump(mode="json") for q in questions], session["resources"])
+        self._validate_sources([q.model_dump(mode="json") for q in questions], evidence)
         return self.db.replace_questions(session_id, [q.model_dump(mode="json") for q in questions])
 
     async def evaluate(self, question_id: str, answer: str) -> dict:
         question = self.db.get_question(question_id)
         session = self.db.get_session(question["session_id"])
-        evaluation = await self.ai.evaluate_answer(question, answer, session["resources"])
+        chunks = await self.retriever.retrieve(
+            session["id"], question["prompt"], RetrievalPolicy.LEARNING
+        )
+        evidence = self.retriever.attach_to_resources(session["resources"], chunks)
+        evaluation = await self.ai.evaluate_answer(question, answer, evidence)
         point = next(item for item in session["knowledge_points"] if item["id"] == question["knowledge_point_id"])
         new_mastery = update_mastery(point["current_mastery"], evaluation.score, point["expected_mastery"])
         status = debt_status(new_mastery, point["expected_mastery"], attempted=True).value
@@ -61,9 +83,38 @@ class KnowledgeService:
     async def remediate(self, point_id: str, reason: str) -> dict:
         point = self.db.get_knowledge_point(point_id)
         session = self.db.get_session(point["source_session_id"])
-        draft = await self.ai.remediate(point, reason, session["resources"])
-        self._validate_sources(draft.model_dump(mode="json"), session["resources"])
+        chunks = await self.retriever.retrieve(
+            session["id"], f"{point['title']} {point['description']} {reason}", RetrievalPolicy.LEARNING
+        )
+        evidence = self.retriever.attach_to_resources(session["resources"], chunks)
+        draft = await self.ai.remediate(point, reason, evidence)
+        self._validate_sources(draft.model_dump(mode="json"), evidence)
         return self.db.save_remediation(point_id, reason, draft.model_dump(mode="json"))
+
+    def _dual_policy_evidence(
+        self, resources: list[dict], reconstruction_chunks: list[dict], learning_chunks: list[dict]
+    ) -> list[dict]:
+        reconstruction = {
+            item["id"]: item
+            for item in self.retriever.attach_to_resources(resources, reconstruction_chunks)
+        }
+        learning = {
+            item["id"]: item for item in self.retriever.attach_to_resources(resources, learning_chunks)
+        }
+        selected: list[dict] = []
+        for resource in resources:
+            if resource["id"] not in reconstruction and resource["id"] not in learning:
+                continue
+            selected.append(
+                {
+                    **resource,
+                    "reconstruction_chunks": reconstruction.get(resource["id"], {}).get(
+                        "retrieved_chunks", []
+                    ),
+                    "learning_chunks": learning.get(resource["id"], {}).get("retrieved_chunks", []),
+                }
+            )
+        return selected
 
     @staticmethod
     def _validate_sources(payload: object, evidence: list[dict]) -> None:

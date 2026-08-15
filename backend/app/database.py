@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS resources (
   id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   type TEXT NOT NULL, evidence_level TEXT NOT NULL, name TEXT NOT NULL, mime_type TEXT,
-  local_path TEXT, external_url TEXT, extracted_text TEXT NOT NULL DEFAULT '',
+  local_path TEXT, storage_provider TEXT NOT NULL DEFAULT 'local', storage_key TEXT,
+  external_url TEXT, extracted_text TEXT NOT NULL DEFAULT '',
   coverage REAL NOT NULL DEFAULT 1, quality REAL NOT NULL DEFAULT 1,
   relevance REAL NOT NULL DEFAULT 1, duration_seconds REAL,
   start_offset REAL, end_offset REAL, session_duration REAL,
@@ -39,6 +40,13 @@ CREATE TABLE IF NOT EXISTS transcript_segments (
   start_time REAL NOT NULL, end_time REAL NOT NULL,
   global_start REAL NOT NULL, global_end REAL NOT NULL,
   text TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS document_chunks (
+  id TEXT PRIMARY KEY, resource_id TEXT NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL, text TEXT NOT NULL, locator_type TEXT NOT NULL,
+  page INTEGER, slide INTEGER, content_kind TEXT NOT NULL DEFAULT 'text', visual_path TEXT,
+  embedding_json TEXT, metadata_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL,
+  UNIQUE(resource_id, position)
 );
 CREATE TABLE IF NOT EXISTS reconstructions (
   id TEXT PRIMARY KEY, session_id TEXT NOT NULL UNIQUE REFERENCES sessions(id) ON DELETE CASCADE,
@@ -84,6 +92,7 @@ CREATE TABLE IF NOT EXISTS remediations (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_course ON sessions(course_id);
 CREATE INDEX IF NOT EXISTS idx_resources_session ON resources(session_id);
+CREATE INDEX IF NOT EXISTS idx_document_chunks_resource ON document_chunks(resource_id, position);
 CREATE INDEX IF NOT EXISTS idx_debts_session ON debts(session_id);
 """
 
@@ -98,7 +107,8 @@ def _decode(row: sqlite3.Row | None) -> dict[str, Any] | None:
     result = dict(row)
     for key in tuple(result):
         if key.endswith("_json"):
-            result[key.removesuffix("_json")] = json.loads(result.pop(key))
+            raw = result.pop(key)
+            result[key.removesuffix("_json")] = json.loads(raw) if raw is not None else None
     for key in ("completed", "active", "blocks_next_session"):
         if key in result:
             result[key] = bool(result[key])
@@ -121,6 +131,8 @@ class Database:
             "end_offset": "ALTER TABLE resources ADD COLUMN end_offset REAL",
             "session_duration": "ALTER TABLE resources ADD COLUMN session_duration REAL",
             "capture_range_json": "ALTER TABLE resources ADD COLUMN capture_range_json TEXT NOT NULL DEFAULT '[]'",
+            "storage_provider": "ALTER TABLE resources ADD COLUMN storage_provider TEXT NOT NULL DEFAULT 'local'",
+            "storage_key": "ALTER TABLE resources ADD COLUMN storage_key TEXT",
         }
         for column, statement in resource_migrations.items():
             if column not in resource_columns:
@@ -251,6 +263,8 @@ class Database:
             "name": values["name"],
             "mime_type": values.get("mime_type"),
             "local_path": values.get("local_path"),
+            "storage_provider": values.get("storage_provider", "local"),
+            "storage_key": values.get("storage_key"),
             "external_url": values.get("external_url"),
             "extracted_text": values.get("extracted_text", ""),
             "coverage": values.get("coverage", 1.0),
@@ -279,6 +293,7 @@ class Database:
             raise KeyError("resource")
         result = _decode(row)  # type: ignore[assignment]
         result["transcript_segments"] = self.list_transcript_segments(resource_id)
+        result["chunks"] = self.list_document_chunks(resource_id)
         return result  # type: ignore[return-value]
 
     def list_resources(self, session_id: str) -> list[dict[str, Any]]:
@@ -289,6 +304,7 @@ class Database:
         resources = [_decode(row) for row in rows]  # type: ignore[misc]
         for resource in resources:
             resource["transcript_segments"] = self.list_transcript_segments(resource["id"])
+            resource["chunks"] = self.list_document_chunks(resource["id"])
         return resources
 
     def list_transcript_segments(self, resource_id: str) -> list[dict[str, Any]]:
@@ -298,6 +314,60 @@ class Database:
                 (resource_id,),
             ).fetchall()
         return [_decode(row) for row in rows]  # type: ignore[misc]
+
+    def replace_document_chunks(self, resource_id: str, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        self.get_resource(resource_id)
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute("DELETE FROM document_chunks WHERE resource_id=?", (resource_id,))
+            conn.executemany(
+                """INSERT INTO document_chunks
+                   (id, resource_id, position, text, locator_type, page, slide, content_kind,
+                    visual_path, embedding_json, metadata_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [
+                    (
+                        chunk["id"],
+                        resource_id,
+                        chunk["position"],
+                        chunk["text"],
+                        chunk["locator_type"],
+                        chunk.get("page"),
+                        chunk.get("slide"),
+                        chunk.get("content_kind", "text"),
+                        chunk.get("visual_path"),
+                        json.dumps(chunk.get("embedding")) if chunk.get("embedding") is not None else None,
+                        json.dumps(chunk.get("metadata", {}), ensure_ascii=False),
+                        now,
+                    )
+                    for chunk in chunks
+                ],
+            )
+        return self.list_document_chunks(resource_id)
+
+    def list_document_chunks(self, resource_id: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM document_chunks WHERE resource_id=? ORDER BY position", (resource_id,)
+            ).fetchall()
+        return [_decode(row) for row in rows]  # type: ignore[misc]
+
+    def list_session_chunks(self, session_id: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT c.*, r.session_id, r.type AS resource_type, r.evidence_level, r.name AS resource_name
+                   FROM document_chunks c JOIN resources r ON r.id=c.resource_id
+                   WHERE r.session_id=? ORDER BY c.position""",
+                (session_id,),
+            ).fetchall()
+        return [_decode(row) for row in rows]  # type: ignore[misc]
+
+    def update_chunk_embeddings(self, embeddings: dict[str, list[float]]) -> None:
+        with self.connect() as conn:
+            conn.executemany(
+                "UPDATE document_chunks SET embedding_json=? WHERE id=?",
+                [(json.dumps(vector), chunk_id) for chunk_id, vector in embeddings.items()],
+            )
 
     def update_resource_quality(
         self, resource_id: str, coverage: float, quality: float, relevance: float

@@ -35,3 +35,9 @@ class TranscriptionProvider(Protocol):
     requires_external_upload: bool
 
     async def transcribe(self, path: str, mime_type: str | None) -> list[TranscriptSegment]: ...
+
+
+class EmbeddingProvider(Protocol):
+    requires_external_upload: bool
+
+    async def embed_texts(self, texts: list[str]) -> list[list[float]]: ...

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-import shutil
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -12,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from .config import Settings
 from .database import Database
-from .documents import extract_text
+from .documents import extract_document
 from .models import (
     AnalysisRequest,
     AnswerSubmission,
@@ -27,14 +26,17 @@ from .models import (
 )
 from .providers.base import (
     AIProvider,
+    EmbeddingProvider,
     ProviderNotConfigured,
     ProviderOutputError,
     ProviderRequestError,
     TranscriptionProvider,
 )
 from .providers.openai_compatible import OpenAICompatibleProvider
+from .retrieval import RetrievalPolicy
 from .scoring import minimum_daily_minutes
 from .service import KnowledgeService
+from .storage import LocalStorageProvider, S3StorageProvider, StorageProvider, StoredObject
 
 
 class LinkResourceCreate(BaseModel):
@@ -43,6 +45,12 @@ class LinkResourceCreate(BaseModel):
     evidence_level: EvidenceLevel = EvidenceLevel.SUPPLEMENTARY
     resource_type: ResourceType = ResourceType.LINK
     notes: str = ""
+
+
+class RetrievalRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=1000)
+    policy: RetrievalPolicy = RetrievalPolicy.RECONSTRUCTION
+    limit: int = Field(default=12, ge=1, le=50)
 
 
 def _safe_name(name: str) -> str:
@@ -63,14 +71,33 @@ def create_app(
     db: Database | None = None,
     ai_provider: AIProvider | None = None,
     asr_provider: TranscriptionProvider | None = None,
+    embedding_provider: EmbeddingProvider | None = None,
+    storage_provider: StorageProvider | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     database = db or Database(settings.data_dir / "knowledgedebt.sqlite3")
     default_provider = OpenAICompatibleProvider(
-        settings.api_key, settings.base_url, settings.ai_model, settings.asr_model
+        settings.api_key,
+        settings.base_url,
+        settings.ai_model,
+        settings.asr_model,
+        settings.embedding_model,
     )
-    service = KnowledgeService(database, ai_provider or default_provider, asr_provider or default_provider)
+    service = KnowledgeService(
+        database,
+        ai_provider or default_provider,
+        asr_provider or default_provider,
+        embedding_provider,
+    )
+    if storage_provider:
+        storage = storage_provider
+    elif settings.storage_provider == "s3":
+        if not settings.s3_bucket:
+            raise ValueError("KNOWLEDGEDEBT_S3_BUCKET is required for S3 storage")
+        storage = S3StorageProvider(settings.s3_bucket, settings.s3_endpoint_url)
+    else:
+        storage = LocalStorageProvider(settings.data_dir / "resources")
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -85,6 +112,7 @@ def create_app(
     app.state.settings = settings
     app.state.db = database
     app.state.service = service
+    app.state.storage = storage
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost", "http://127.0.0.1"],
@@ -129,6 +157,9 @@ def create_app(
             "asr_provider": settings.asr_provider,
             "ai_model": settings.ai_model,
             "asr_model": settings.asr_model,
+            "embedding_provider": settings.embedding_provider,
+            "embedding_model": settings.embedding_model,
+            "storage_provider": storage.name,
             "configured": bool(settings.api_key),
             "external_upload_requires_confirmation": True,
         }
@@ -192,12 +223,11 @@ def create_app(
         if session_duration is not None and end_offset is not None and end_offset > session_duration:
             raise HTTPException(status_code=422, detail="capture range cannot exceed session_duration")
         capture_range = [start_offset, end_offset] if start_offset is not None and end_offset is not None else []
-        directory = settings.data_dir / "resources" / session_id
-        directory.mkdir(parents=True, exist_ok=True)
-        target = directory / f"{uuid.uuid4().hex}_{_safe_name(file.filename or 'resource')}"
-        with target.open("wb") as handle:
-            shutil.copyfileobj(file.file, handle)
-        extracted = extract_text(target, file.content_type)
+        upload_id = uuid.uuid4().hex
+        key = f"{session_id}/{upload_id}_{_safe_name(file.filename or 'resource')}"
+        stored = storage.save(key, file.file, file.content_type)
+        target = storage.materialize(stored)
+        extraction = extract_document(target, file.content_type, settings.data_dir / "derived" / upload_id)
         if (
             resource_type
             in {
@@ -207,7 +237,7 @@ def create_app(
                 ResourceType.ASSIGNMENT,
                 ResourceType.NOTE,
             }
-            and not extracted.strip()
+            and not extraction.text.strip()
         ):
             quality = min(quality, 0.2)
         resource = database.add_resource(
@@ -216,8 +246,10 @@ def create_app(
             evidence_level=evidence_level.value,
             name=file.filename or target.name,
             mime_type=file.content_type,
-            local_path=str(target),
-            extracted_text=extracted,
+            local_path=str(target) if stored.local_path else None,
+            storage_provider=stored.provider,
+            storage_key=stored.key,
+            extracted_text=extraction.text,
             coverage=coverage,
             quality=quality,
             relevance=relevance,
@@ -227,6 +259,10 @@ def create_app(
             session_duration=session_duration,
             capture_range=capture_range,
         )
+        if extraction.chunks:
+            database.replace_document_chunks(resource["id"], extraction.chunks)
+            await service.retriever.index_resource(resource["id"])
+            resource = database.get_resource(resource["id"])
         reconstruction, learning = service.refresh_scores(session_id)
         resource["session_scores"] = {"reconstruction": reconstruction, "learning_coverage": learning}
         return resource
@@ -253,15 +289,28 @@ def create_app(
     @app.post("/resources/{resource_id}/transcribe")
     async def transcribe(resource_id: str, payload: TranscriptionRequest) -> dict:
         resource = database.get_resource(resource_id)
-        if resource["type"] not in {"audio", "video"} or not resource["local_path"]:
+        if resource["type"] not in {"audio", "video"} or not (
+            resource["local_path"] or resource.get("storage_key")
+        ):
             raise HTTPException(
                 status_code=422, detail="Only a locally stored audio or video resource can be transcribed"
             )
         _permission(payload.confirm_external_upload, service.asr)
-        segments = await service.asr.transcribe(resource["local_path"], resource["mime_type"])
+        if resource["local_path"]:
+            media_path = Path(resource["local_path"])
+        else:
+            media_path = storage.materialize(
+                StoredObject(provider=resource["storage_provider"], key=resource["storage_key"])
+            )
+        segments = await service.asr.transcribe(str(media_path), resource["mime_type"])
         database.save_transcript(resource_id, [item.model_dump() for item in segments])
         service.refresh_scores(resource["session_id"])
         return {"resource_id": resource_id, "segments": database.list_transcript_segments(resource_id)}
+
+    @app.post("/sessions/{session_id}/retrieve")
+    async def retrieve(session_id: str, payload: RetrievalRequest) -> list[dict]:
+        database.get_session(session_id)
+        return await service.retriever.retrieve(session_id, payload.query, payload.policy, payload.limit)
 
     @app.post("/sessions/{session_id}/analyze")
     async def analyze(session_id: str, payload: AnalysisRequest) -> dict:

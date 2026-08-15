@@ -30,8 +30,8 @@ export interface SourceRef {
   locator?: string | null;
   start_time?: number | null;
   end_time?: number | null;
-  page_number?: number | null;
-  slide_number?: number | null;
+  page?: number | null;
+  slide?: number | null;
   chunk_id?: string | null;
 }
 
@@ -43,6 +43,17 @@ export interface Resource {
   mime_type?: string | null;
   external_url?: string | null;
   duration_seconds?: number | null;
+  start_offset?: number | null;
+  end_offset?: number | null;
+  session_duration?: number | null;
+  capture_range?: number[];
+  chunks?: Array<{
+    id: string;
+    locator_type: string;
+    page?: number | null;
+    slide?: number | null;
+    content_kind: string;
+  }>;
   coverage: number;
   quality: number;
   relevance: number;

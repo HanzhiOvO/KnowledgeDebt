@@ -5,4 +5,5 @@ python-multipart>=0.0.20,<1
 python-dotenv>=1.1,<2
 pydantic>=2.11,<3
 pypdf>=6,<7
+pymupdf>=1.26,<2
 python-pptx>=1.0,<2
