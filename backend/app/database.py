@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+
+from sqlalchemy import Connection, Engine, create_engine, text
 
 from .models import DEFAULT_PROFILE, CourseCreate, SessionCreate, utc_now
 
@@ -125,7 +127,7 @@ def _id() -> str:
     return str(uuid.uuid4())
 
 
-def _decode(row: sqlite3.Row | None) -> dict[str, Any] | None:
+def _decode(row: sqlite3.Row | Mapping[str, Any] | None) -> dict[str, Any] | None:
     if row is None:
         return None
     result = dict(row)
@@ -139,13 +141,77 @@ def _decode(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return result
 
 
+def _named_statement(statement: str, values: Sequence[Any]) -> tuple[str, dict[str, Any]]:
+    """Translate the existing DB-API qmark syntax to SQLAlchemy named parameters."""
+
+    pieces = statement.split("?")
+    if len(pieces) - 1 != len(values):
+        raise ValueError("SQL placeholder count does not match supplied values")
+    rendered = pieces[0]
+    params: dict[str, Any] = {}
+    for index, value in enumerate(values):
+        name = f"value_{index}"
+        rendered += f":{name}{pieces[index + 1]}"
+        params[name] = value
+    return rendered, params
+
+
+class _AlchemyResult:
+    def __init__(self, result: Any):
+        self._result = result
+
+    def fetchone(self) -> Mapping[str, Any] | None:
+        return self._result.mappings().fetchone()
+
+    def fetchall(self) -> list[Mapping[str, Any]]:
+        return list(self._result.mappings().fetchall())
+
+
+class _AlchemyConnection:
+    """Small compatibility adapter while data access moves incrementally to ORM repositories."""
+
+    def __init__(self, connection: Connection):
+        self._connection = connection
+
+    def execute(self, statement: str, values: Sequence[Any] = ()) -> _AlchemyResult:
+        rendered, params = _named_statement(statement, values)
+        return _AlchemyResult(self._connection.execute(text(rendered), params))
+
+    def executemany(self, statement: str, values: Sequence[Sequence[Any]]) -> None:
+        rows = list(values)
+        if not rows:
+            return
+        rendered, _ = _named_statement(statement, rows[0])
+        params = [_named_statement(statement, row)[1] for row in rows]
+        self._connection.execute(text(rendered), params)
+
+    def executescript(self, script: str) -> None:
+        for statement in script.split(";"):
+            statement = statement.strip()
+            if statement and not statement.upper().startswith("PRAGMA"):
+                self._connection.execute(text(statement))
+
+
 class Database:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path | str):
         self.path = path
-        path.parent.mkdir(parents=True, exist_ok=True)
+        self.engine: Engine | None = None
+        self.uses_sqlalchemy = isinstance(path, str) and "://" in path
+        self.is_postgres = isinstance(path, str) and path.startswith(("postgres://", "postgresql"))
+        if self.uses_sqlalchemy:
+            database_url = str(path)
+            if database_url.startswith("postgres://"):
+                database_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
+            elif database_url.startswith("postgresql://"):
+                database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+            self.engine = create_engine(database_url, pool_pre_ping=True)
+        else:
+            self.path = Path(path)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
             conn.executescript(SCHEMA)
-            self._migrate_legacy_schema(conn)
+            if not self.uses_sqlalchemy:
+                self._migrate_legacy_schema(conn)
 
     @staticmethod
     def _migrate_legacy_schema(conn: sqlite3.Connection) -> None:
@@ -202,7 +268,11 @@ class Database:
                 )
 
     @contextmanager
-    def connect(self) -> Iterator[sqlite3.Connection]:
+    def connect(self) -> Iterator[Any]:
+        if self.engine:
+            with self.engine.begin() as connection:
+                yield _AlchemyConnection(connection)
+            return
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
         try:
@@ -531,9 +601,10 @@ class Database:
                     prerequisite_id = course_points.get(prerequisite_title)
                     if prerequisite_id and prerequisite_id != point_id:
                         conn.execute(
-                            """INSERT OR IGNORE INTO knowledge_point_dependencies
+                            """INSERT INTO knowledge_point_dependencies
                                (knowledge_point_id, prerequisite_id, relation_type, created_at)
-                               VALUES (?, ?, 'prerequisite', ?)""",
+                               VALUES (?, ?, 'prerequisite', ?)
+                               ON CONFLICT(knowledge_point_id, prerequisite_id) DO NOTHING""",
                             (point_id, prerequisite_id, now),
                         )
             for step in payload["learning_path"]:
@@ -773,14 +844,14 @@ class Database:
         with self.connect() as conn:
             conn.execute(
                 """UPDATE debts
-                   SET blocks_next_session = debts.status!='mastered' AND EXISTS (
+                   SET blocks_next_session = CASE WHEN debts.status!='mastered' AND EXISTS (
                      SELECT 1 FROM knowledge_point_dependencies dep
                      JOIN debts dependent_debt ON dependent_debt.knowledge_point_id=dep.knowledge_point_id
                      JOIN knowledge_points dependent_point ON dependent_point.id=dep.knowledge_point_id
                      WHERE dep.prerequisite_id=debts.knowledge_point_id
                        AND dependent_point.course_id=?
                        AND dependent_debt.status!='mastered'
-                   )
+                   ) THEN 1 ELSE 0 END
                    WHERE knowledge_point_id IN (SELECT id FROM knowledge_points WHERE course_id=?)""",
                 (course_id, course_id),
             )
