@@ -1,4 +1,4 @@
-# Secrets and local data
+# 密钥与本地数据
 .env
 .env.*
 !.env.example
@@ -11,14 +11,14 @@ data/
 *.mp3
 *.mp4
 
-# Python
+# Python 缓存与虚拟环境
 __pycache__/
 *.py[cod]
 .venv/
 .pytest_cache/
 .ruff_cache/
 
-# Flutter / Dart
+# Legacy Flutter / Dart 构建产物
 .dart_tool/
 .flutter-plugins
 .flutter-plugins-dependencies
@@ -31,12 +31,12 @@ legacy/flutter-client/android/local.properties
 legacy/flutter-client/ios/Flutter/ephemeral/
 legacy/flutter-client/macos/Flutter/ephemeral/
 
-# Next.js
+# Next.js 依赖与构建产物
 web/.next/
 web/node_modules/
 web/.env.local
 
-# Editors and OS
+# 编辑器与操作系统文件
 .idea/
 .vscode/
 .DS_Store

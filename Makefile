@@ -1,4 +1,13 @@
-.PHONY: dev backend-install backend-run backend-test backend-lint migrate web-install web-run web-test legacy-client-get legacy-client-run legacy-client-test compose-up compose-down verify
+.PHONY: help dev backend-install backend-run backend-test backend-lint migrate web-install web-run web-test legacy-client-get legacy-client-run legacy-client-test compose-up compose-down verify
+
+help:
+	@echo "KnowledgeDebt 常用命令"
+	@echo "  make dev             同时启动 FastAPI 与 Next.js 开发服务"
+	@echo "  make verify          运行后端检查、测试与 Web 生产构建"
+	@echo "  make backend-test    运行 Pytest"
+	@echo "  make web-test        运行 ESLint、TypeScript 与 Next.js 构建"
+	@echo "  make migrate         执行 Alembic 数据库迁移"
+	@echo "  make compose-up      构建并启动 Docker Compose 服务"
 
 dev:
 	@$(MAKE) -j2 backend-run web-run

@@ -1,6 +1,7 @@
 name: knowledgedebt
 
 services:
+  # 生产数据使用 PostgreSQL；本地非容器开发仍默认使用 SQLite。
   database:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -18,6 +19,7 @@ services:
     cpus: 0.5
     mem_limit: 512m
 
+  # FastAPI 负责领域逻辑、证据校验、Provider 编排与资源存储。
   backend:
     build:
       context: .
@@ -48,6 +50,7 @@ services:
     cpus: 1.0
     mem_limit: 1g
 
+  # Next.js 是主要客户端，并通过服务端同源代理访问 backend。
   web:
     build:
       context: .
