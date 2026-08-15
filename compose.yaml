@@ -1,0 +1,68 @@
+name: knowledgedebt
+
+services:
+  database:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: knowledgedebt
+      POSTGRES_USER: knowledgedebt
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-this-password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U knowledgedebt -d knowledgedebt"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    cpus: 0.5
+    mem_limit: 512m
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    environment:
+      KNOWLEDGEDEBT_DATABASE_URL: postgresql://knowledgedebt:${POSTGRES_PASSWORD:-change-this-password}@database:5432/knowledgedebt
+      KNOWLEDGEDEBT_DATA_DIR: /data
+      KNOWLEDGEDEBT_ACCESS_TOKEN: ${KNOWLEDGEDEBT_ACCESS_TOKEN:-}
+      KNOWLEDGEDEBT_AI_PROVIDER: ${KNOWLEDGEDEBT_AI_PROVIDER:-openai_compatible}
+      KNOWLEDGEDEBT_ASR_PROVIDER: ${KNOWLEDGEDEBT_ASR_PROVIDER:-openai_compatible}
+      KNOWLEDGEDEBT_EMBEDDING_PROVIDER: ${KNOWLEDGEDEBT_EMBEDDING_PROVIDER:-openai_compatible}
+      KNOWLEDGEDEBT_AI_MODEL: ${KNOWLEDGEDEBT_AI_MODEL:-gpt-5-mini}
+      KNOWLEDGEDEBT_ASR_MODEL: ${KNOWLEDGEDEBT_ASR_MODEL:-gpt-4o-mini-transcribe}
+      KNOWLEDGEDEBT_EMBEDDING_MODEL: ${KNOWLEDGEDEBT_EMBEDDING_MODEL:-text-embedding-3-small}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      KNOWLEDGEDEBT_STORAGE_PROVIDER: ${KNOWLEDGEDEBT_STORAGE_PROVIDER:-local}
+      KNOWLEDGEDEBT_S3_BUCKET: ${KNOWLEDGEDEBT_S3_BUCKET:-}
+      KNOWLEDGEDEBT_S3_ENDPOINT_URL: ${KNOWLEDGEDEBT_S3_ENDPOINT_URL:-}
+    volumes:
+      - resource_data:/data
+    depends_on:
+      database:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8123:8123"
+    cpus: 1.0
+    mem_limit: 1g
+
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    restart: unless-stopped
+    environment:
+      KNOWLEDGEDEBT_API_URL: http://backend:8123
+      KNOWLEDGEDEBT_ACCESS_TOKEN: ${KNOWLEDGEDEBT_ACCESS_TOKEN:-}
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+    cpus: 0.5
+    mem_limit: 512m
+
+volumes:
+  postgres_data:
+  resource_data:

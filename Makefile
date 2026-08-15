@@ -1,4 +1,4 @@
-.PHONY: dev backend-install backend-run backend-test backend-lint web-install web-run web-test legacy-client-get legacy-client-run legacy-client-test verify
+.PHONY: dev backend-install backend-run backend-test backend-lint migrate web-install web-run web-test legacy-client-get legacy-client-run legacy-client-test compose-up compose-down verify
 
 dev:
 	@$(MAKE) -j2 backend-run web-run
@@ -15,6 +15,9 @@ backend-test:
 
 backend-lint:
 	cd backend && ../.venv/bin/ruff check .
+
+migrate:
+	cd backend && ../.venv/bin/alembic -c alembic.ini upgrade head
 
 web-install:
 	cd web && npm ci
@@ -33,5 +36,11 @@ legacy-client-run:
 
 legacy-client-test:
 	cd legacy/flutter-client && flutter analyze && flutter test
+
+compose-up:
+	docker compose up --build
+
+compose-down:
+	docker compose down
 
 verify: backend-lint backend-test web-test
