@@ -18,7 +18,7 @@ jobs:
       - run: pip install -r backend/requirements-dev.txt
       - run: ruff check .
         working-directory: backend
-      - run: pytest -q
+      - run: python -m pytest -q
         working-directory: backend
 
   flutter:
@@ -35,4 +35,3 @@ jobs:
         working-directory: client
       - run: flutter test
         working-directory: client
-
