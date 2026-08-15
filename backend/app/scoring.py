@@ -16,6 +16,13 @@ LEARNING_UTILITY = {
     "other": 0.35,
 }
 
+MASTERY_EVIDENCE_WEIGHTS = {
+    "recall": 0.75,
+    "understanding": 1.0,
+    "application": 1.2,
+    "transfer": 1.4,
+}
+
 
 def _bounded(value: object, default: float = 0.0) -> float:
     try:
@@ -165,9 +172,39 @@ def update_mastery(current: float, assessment_score: float, target: int) -> floa
     """Recency-weighted update on the 0..4 mastery scale."""
     observed = max(0.0, min(1.0, assessment_score)) * target
     updated = current * 0.35 + observed * 0.65
-    if assessment_score >= 0.88:
-        updated = max(updated, float(target))
     return round(max(0.0, min(4.0, updated)), 2)
+
+
+def aggregate_mastery(evidence: Iterable[dict], target: int) -> float:
+    """Aggregate persisted evidence; one correct answer can never clear a debt."""
+    items = list(evidence)
+    if not items:
+        return 0.0
+    weighted_score = 0.0
+    total_weight = 0.0
+    for item in items:
+        type_weight = MASTERY_EVIDENCE_WEIGHTS.get(item.get("evidence_type", "understanding"), 1.0)
+        weight = max(0.0, float(item.get("weight", 1.0))) * type_weight
+        weighted_score += _bounded(item.get("score")) * weight
+        total_weight += weight
+    ratio = weighted_score / total_weight if total_weight else 0.0
+    mastery = ratio * target
+    strong_types = {
+        item.get("evidence_type")
+        for item in items
+        if _bounded(item.get("score")) >= 0.75
+    }
+    required_high_level = "recall" if target <= 1 else "understanding"
+    eligible = len(items) >= 2 and (
+        required_high_level in strong_types
+        or "application" in strong_types
+        or "transfer" in strong_types
+    )
+    if eligible and ratio >= 0.82:
+        mastery = float(target)
+    elif not eligible:
+        mastery = min(mastery, max(0.0, target - 0.01))
+    return round(max(0.0, min(4.0, mastery)), 2)
 
 
 def minimum_daily_minutes(debts: Iterable[dict]) -> int:

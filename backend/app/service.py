@@ -3,10 +3,11 @@ from __future__ import annotations
 import re
 
 from .database import Database
+from .models import JobKind, JobStatus
 from .providers.base import AIProvider, EmbeddingProvider, ProviderOutputError, TranscriptionProvider
 from .providers.hash_embedding import HashEmbeddingProvider
 from .retrieval import RetrievalPolicy, SessionRetriever
-from .scoring import debt_status, learning_coverage, reconstruction_score, update_mastery
+from .scoring import aggregate_mastery, debt_status, learning_coverage, reconstruction_score
 
 
 class KnowledgeService:
@@ -59,9 +60,10 @@ class KnowledgeService:
         questions = await self.ai.generate_questions(session, evidence, points)
         allowed_points = {point["title"]: point["expected_mastery"] for point in points}
         for question in questions:
-            expected = allowed_points.get(question.knowledge_point_title)
-            if expected is None or question.expected_mastery_level > expected:
-                raise ProviderOutputError("Provider returned an out-of-scope assessment question")
+            for title in question.knowledge_point_titles:
+                expected = allowed_points.get(title)
+                if expected is None or question.expected_mastery_level > expected:
+                    raise ProviderOutputError("Provider returned an out-of-scope assessment question")
         self._validate_sources([q.model_dump(mode="json") for q in questions], evidence)
         return self.db.replace_questions(session_id, [q.model_dump(mode="json") for q in questions])
 
@@ -73,12 +75,126 @@ class KnowledgeService:
         )
         evidence = self.retriever.attach_to_resources(session["resources"], chunks)
         evaluation = await self.ai.evaluate_answer(question, answer, evidence)
-        point = next(item for item in session["knowledge_points"] if item["id"] == question["knowledge_point_id"])
-        new_mastery = update_mastery(point["current_mastery"], evaluation.score, point["expected_mastery"])
-        status = debt_status(new_mastery, point["expected_mastery"], attempted=True).value
-        result = self.db.save_attempt_and_mastery(question_id, answer, evaluation.model_dump(), new_mastery, status)
+        points_by_id = {point["id"]: point for point in session["knowledge_points"]}
+        points_by_title = {point["title"]: point for point in session["knowledge_points"]}
+        point_ids = question.get("knowledge_point_ids") or [question["knowledge_point_id"]]
+        evaluated = {item.knowledge_point_title: item for item in evaluation.point_results}
+        evidence_results: list[dict] = []
+        evidence_type = self._evidence_type(question["level"])
+        for point_id in point_ids:
+            point = points_by_id.get(point_id)
+            if not point:
+                continue
+            point_result = evaluated.get(point["title"])
+            evidence_results.append(
+                {
+                    "knowledge_point_id": point_id,
+                    "evidence_type": point_result.evidence_type.value if point_result else evidence_type,
+                    "score": point_result.score if point_result else evaluation.score,
+                    "weight": 1.0,
+                    "metadata": {"question_type": question.get("question_type", "diagnostic")},
+                }
+            )
+        attempt = self.db.save_attempt(question_id, answer, evaluation.model_dump(mode="json"))
+        saved_evidence = self.db.add_mastery_evidence(attempt["id"], question_id, evidence_results)
+        updates: list[dict] = []
+        for point_id in point_ids:
+            point = points_by_id.get(point_id)
+            if not point:
+                continue
+            mastery = aggregate_mastery(self.db.list_mastery_evidence(point_id), point["expected_mastery"])
+            status = debt_status(mastery, point["expected_mastery"], attempted=True).value
+            self.db.update_point_mastery(point_id, mastery, status)
+            updates.append(
+                {"knowledge_point_id": point_id, "title": point["title"], "mastery": mastery, "status": status}
+            )
+        weak_points = [
+            points_by_title[item.knowledge_point_title]
+            for item in evaluation.point_results
+            if item.score < 0.75 and item.knowledge_point_title in points_by_title
+        ]
+        if not evaluation.point_results and evaluation.score < 0.75:
+            weak_points = [points_by_id[item] for item in point_ids if item in points_by_id]
+        follow_ups = await self._make_follow_up(session, question, answer, evaluation, weak_points, evidence)
+        result = {
+            **attempt,
+            "mastery_evidence": saved_evidence,
+            "mastery_updates": updates,
+            "new_mastery": updates[0]["mastery"] if len(updates) == 1 else None,
+            "debt_status": updates[0]["status"] if len(updates) == 1 else None,
+            "follow_up_questions": follow_ups,
+        }
         result["session_status"] = self.db.refresh_session_status(question["session_id"])
         return result
+
+    async def _make_follow_up(
+        self,
+        session: dict,
+        question: dict,
+        answer: str,
+        evaluation: object,
+        weak_points: list[dict],
+        evidence: list[dict],
+    ) -> list[dict]:
+        if not weak_points:
+            return []
+        follow_ups = await self.ai.generate_questions(session, evidence, weak_points)
+        allowed = {point["title"]: point["expected_mastery"] for point in weak_points}
+        payloads: list[dict] = []
+        for follow_up in follow_ups[:2]:
+            if not all(title in allowed for title in follow_up.knowledge_point_titles):
+                raise ProviderOutputError("Provider returned an out-of-scope follow-up question")
+            payload = follow_up.model_dump(mode="json")
+            payload["question_type"] = "follow_up"
+            payloads.append(payload)
+        self._validate_sources(payloads, evidence)
+        del answer, evaluation
+        return self.db.append_questions(session["id"], payloads, parent_question_id=question["id"])
+
+    @staticmethod
+    def _evidence_type(level: str) -> str:
+        normalized = level.lower()
+        if normalized in {"recall", "remember"}:
+            return "recall"
+        if normalized in {"application", "apply", "problem_solving"}:
+            return "application"
+        if normalized in {"transfer", "synthesis"}:
+            return "transfer"
+        return "understanding"
+
+    async def run_job(self, job_id: str) -> dict:
+        job = self.db.get_job(job_id)
+        if job["status"] == JobStatus.CANCELLED.value:
+            return job
+        try:
+            self.db.update_job(job_id, status=JobStatus.RUNNING.value, stage="preparing", progress=5)
+            if job["kind"] == JobKind.ANALYSIS.value:
+                self.db.update_job(job_id, stage="retrieving_evidence", progress=20)
+                result = await self.analyze(job["session_id"])
+                summary = {
+                    "knowledge_point_count": len(result["knowledge_points"]),
+                    "debt_count": len(result["debts"]),
+                }
+            elif job["kind"] == JobKind.ASSESSMENT.value:
+                self.db.update_job(job_id, stage="generating_questions", progress=35)
+                result = await self.make_quiz(job["session_id"])
+                summary = {"question_count": len(result)}
+            else:
+                raise ValueError(f"unsupported job kind: {job['kind']}")
+            return self.db.update_job(
+                job_id,
+                status=JobStatus.SUCCEEDED.value,
+                stage="complete",
+                progress=100,
+                result=summary,
+            )
+        except Exception as exc:
+            return self.db.update_job(
+                job_id,
+                status=JobStatus.FAILED.value,
+                stage="failed",
+                error=str(exc),
+            )
 
     async def remediate(self, point_id: str, reason: str) -> dict:
         point = self.db.get_knowledge_point(point_id)

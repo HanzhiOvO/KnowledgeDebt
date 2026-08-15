@@ -42,6 +42,28 @@ class DebtStatus(StrEnum):
     MASTERED = "mastered"
 
 
+class MasteryEvidenceType(StrEnum):
+    RECALL = "recall"
+    UNDERSTANDING = "understanding"
+    APPLICATION = "application"
+    TRANSFER = "transfer"
+
+
+class JobKind(StrEnum):
+    ANALYSIS = "analysis"
+    ASSESSMENT = "assessment"
+    TRANSCRIPTION = "transcription"
+    INDEXING = "indexing"
+
+
+class JobStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 DEFAULT_PROFILE = {
     "classroom": 40.0,
     "official_session": 35.0,
@@ -183,13 +205,28 @@ class ReconstructionDraft(BaseModel):
 
 
 class QuestionDraft(BaseModel):
-    knowledge_point_title: str
+    knowledge_point_titles: list[str] = Field(min_length=1)
     prompt: str
     level: str
+    question_type: str = "diagnostic"
     expected_mastery_level: int = Field(ge=1, le=4)
     reference_answer: str
     rubric: list[str]
     source_refs: list[SourceRef] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_single_point(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "knowledge_point_titles" not in value and value.get("knowledge_point_title"):
+            value = {**value, "knowledge_point_titles": [value["knowledge_point_title"]]}
+        return value
+
+
+class KnowledgePointEvaluation(BaseModel):
+    knowledge_point_title: str
+    score: float = Field(ge=0, le=1)
+    evidence_type: MasteryEvidenceType
+    feedback: str = ""
 
 
 class EvaluationResult(BaseModel):
@@ -198,6 +235,7 @@ class EvaluationResult(BaseModel):
     met_criteria: list[str] = Field(default_factory=list)
     missing_criteria: list[str] = Field(default_factory=list)
     feedback: str
+    point_results: list[KnowledgePointEvaluation] = Field(default_factory=list)
 
 
 class AnswerSubmission(BaseModel):
@@ -225,6 +263,12 @@ class AnalysisRequest(BaseModel):
 
 
 class TranscriptionRequest(BaseModel):
+    confirm_external_upload: bool = False
+
+
+class JobCreate(BaseModel):
+    kind: JobKind
+    resource_id: str | None = None
     confirm_external_upload: bool = False
 
 

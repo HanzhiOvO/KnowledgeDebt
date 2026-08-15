@@ -78,7 +78,9 @@ CREATE TABLE IF NOT EXISTS learning_steps (
 CREATE TABLE IF NOT EXISTS questions (
   id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   knowledge_point_id TEXT NOT NULL REFERENCES knowledge_points(id) ON DELETE CASCADE,
+  knowledge_point_ids_json TEXT NOT NULL DEFAULT '[]',
   prompt TEXT NOT NULL, level TEXT NOT NULL, expected_mastery INTEGER NOT NULL,
+  question_type TEXT NOT NULL DEFAULT 'diagnostic', parent_question_id TEXT,
   reference_answer TEXT NOT NULL, rubric_json TEXT NOT NULL, sources_json TEXT NOT NULL,
   active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL
 );
@@ -90,10 +92,32 @@ CREATE TABLE IF NOT EXISTS remediations (
   id TEXT PRIMARY KEY, knowledge_point_id TEXT NOT NULL REFERENCES knowledge_points(id) ON DELETE CASCADE,
   reason TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS mastery_evidence (
+  id TEXT PRIMARY KEY, knowledge_point_id TEXT NOT NULL REFERENCES knowledge_points(id) ON DELETE CASCADE,
+  question_id TEXT NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+  attempt_id TEXT NOT NULL REFERENCES attempts(id) ON DELETE CASCADE,
+  evidence_type TEXT NOT NULL, score REAL NOT NULL, weight REAL NOT NULL DEFAULT 1,
+  metadata_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS knowledge_point_dependencies (
+  knowledge_point_id TEXT NOT NULL REFERENCES knowledge_points(id) ON DELETE CASCADE,
+  prerequisite_id TEXT NOT NULL REFERENCES knowledge_points(id) ON DELETE CASCADE,
+  relation_type TEXT NOT NULL DEFAULT 'prerequisite', created_at TEXT NOT NULL,
+  PRIMARY KEY (knowledge_point_id, prerequisite_id)
+);
+CREATE TABLE IF NOT EXISTS jobs (
+  id TEXT PRIMARY KEY, session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+  resource_id TEXT REFERENCES resources(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL, status TEXT NOT NULL, stage TEXT NOT NULL, progress INTEGER NOT NULL DEFAULT 0,
+  payload_json TEXT NOT NULL DEFAULT '{}', result_json TEXT, error TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_sessions_course ON sessions(course_id);
 CREATE INDEX IF NOT EXISTS idx_resources_session ON resources(session_id);
 CREATE INDEX IF NOT EXISTS idx_document_chunks_resource ON document_chunks(resource_id, position);
 CREATE INDEX IF NOT EXISTS idx_debts_session ON debts(session_id);
+CREATE INDEX IF NOT EXISTS idx_mastery_evidence_point ON mastery_evidence(knowledge_point_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_session ON jobs(session_id, created_at);
 """
 
 
@@ -154,6 +178,19 @@ class Database:
                 )
             WHERE global_start IS NULL OR global_end IS NULL
             """
+        )
+
+        question_columns = {row["name"] for row in conn.execute("PRAGMA table_info(questions)")}
+        question_migrations = {
+            "knowledge_point_ids_json": "ALTER TABLE questions ADD COLUMN knowledge_point_ids_json TEXT NOT NULL DEFAULT '[]'",
+            "question_type": "ALTER TABLE questions ADD COLUMN question_type TEXT NOT NULL DEFAULT 'diagnostic'",
+            "parent_question_id": "ALTER TABLE questions ADD COLUMN parent_question_id TEXT",
+        }
+        for column, statement in question_migrations.items():
+            if column not in question_columns:
+                conn.execute(statement)
+        conn.execute(
+            "UPDATE questions SET knowledge_point_ids_json=json_array(knowledge_point_id) WHERE knowledge_point_ids_json='[]'"
         )
 
         for row in conn.execute("SELECT id, profile_json FROM courses").fetchall():
@@ -475,6 +512,30 @@ class Database:
                         now,
                     ),
                 )
+            session_point_ids = tuple(title_to_id.values())
+            if session_point_ids:
+                placeholders = ", ".join("?" for _ in session_point_ids)
+                conn.execute(
+                    f"DELETE FROM knowledge_point_dependencies WHERE knowledge_point_id IN ({placeholders})",
+                    session_point_ids,
+                )
+            course_points = {
+                row["title"]: row["id"]
+                for row in conn.execute(
+                    "SELECT id, title FROM knowledge_points WHERE course_id=?", (session["course_id"],)
+                ).fetchall()
+            }
+            for point in payload["knowledge_points"]:
+                point_id = title_to_id[point["title"]]
+                for prerequisite_title in point["prerequisites"]:
+                    prerequisite_id = course_points.get(prerequisite_title)
+                    if prerequisite_id and prerequisite_id != point_id:
+                        conn.execute(
+                            """INSERT OR IGNORE INTO knowledge_point_dependencies
+                               (knowledge_point_id, prerequisite_id, relation_type, created_at)
+                               VALUES (?, ?, 'prerequisite', ?)""",
+                            (point_id, prerequisite_id, now),
+                        )
             for step in payload["learning_path"]:
                 point_ids = [title_to_id[t] for t in step["knowledge_point_titles"] if t in title_to_id]
                 conn.execute(
@@ -494,6 +555,7 @@ class Database:
                         now,
                     ),
                 )
+        self.refresh_dependency_flags(session["course_id"])
 
     def get_reconstruction(self, session_id: str) -> dict[str, Any] | None:
         with self.connect() as conn:
@@ -553,26 +615,50 @@ class Database:
             conn.execute("UPDATE learning_steps SET completed=1, updated_at=? WHERE id=?", (utc_now(), step_id))
 
     def replace_questions(self, session_id: str, questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return self._save_questions(session_id, questions, replace=True)
+
+    def append_questions(
+        self, session_id: str, questions: list[dict[str, Any]], parent_question_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        return self._save_questions(session_id, questions, replace=False, parent_question_id=parent_question_id)
+
+    def _save_questions(
+        self,
+        session_id: str,
+        questions: list[dict[str, Any]],
+        *,
+        replace: bool,
+        parent_question_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         points = {p["title"]: p for p in self.list_knowledge_points(session_id)}
         now = utc_now()
         ids: list[str] = []
         with self.connect() as conn:
-            conn.execute("UPDATE questions SET active=0 WHERE session_id=?", (session_id,))
+            if replace:
+                conn.execute("UPDATE questions SET active=0 WHERE session_id=?", (session_id,))
             for question in questions:
-                point = points.get(question["knowledge_point_title"])
-                if not point:
+                titles = question.get("knowledge_point_titles") or [question.get("knowledge_point_title")]
+                point_ids = [points[title]["id"] for title in titles if title in points]
+                if not point_ids:
                     continue
                 question_id = _id()
                 ids.append(question_id)
                 conn.execute(
-                    "INSERT INTO questions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+                    """INSERT INTO questions
+                       (id, session_id, knowledge_point_id, knowledge_point_ids_json, prompt, level,
+                        expected_mastery, question_type, parent_question_id, reference_answer,
+                        rubric_json, sources_json, active, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)""",
                     (
                         question_id,
                         session_id,
-                        point["id"],
+                        point_ids[0],
+                        json.dumps(point_ids),
                         question["prompt"],
                         question["level"],
                         question["expected_mastery_level"],
+                        "follow_up" if parent_question_id else question.get("question_type", "diagnostic"),
+                        parent_question_id,
                         question["reference_answer"],
                         json.dumps(question["rubric"], ensure_ascii=False),
                         json.dumps(question["source_refs"]),
@@ -595,23 +681,13 @@ class Database:
             raise KeyError("question")
         return _decode(row)  # type: ignore[return-value]
 
-    def save_attempt_and_mastery(
-        self, question_id: str, answer: str, evaluation: dict[str, Any], new_mastery: float, status: str
-    ) -> dict[str, Any]:
-        question = self.get_question(question_id)
+    def save_attempt(self, question_id: str, answer: str, evaluation: dict[str, Any]) -> dict[str, Any]:
+        self.get_question(question_id)
         now, attempt_id = utc_now(), _id()
         with self.connect() as conn:
             conn.execute(
                 "INSERT INTO attempts VALUES (?, ?, ?, ?, ?, ?)",
                 (attempt_id, question_id, answer, json.dumps(evaluation, ensure_ascii=False), evaluation["score"], now),
-            )
-            conn.execute(
-                "UPDATE knowledge_points SET current_mastery=?, updated_at=? WHERE id=?",
-                (new_mastery, now, question["knowledge_point_id"]),
-            )
-            conn.execute(
-                "UPDATE debts SET current_mastery=?, status=?, updated_at=? WHERE knowledge_point_id=?",
-                (new_mastery, status, now, question["knowledge_point_id"]),
             )
         return {
             "id": attempt_id,
@@ -619,10 +695,158 @@ class Database:
             "answer": answer,
             "evaluation": evaluation,
             "score": evaluation["score"],
-            "new_mastery": new_mastery,
-            "debt_status": status,
             "created_at": now,
         }
+
+    def add_mastery_evidence(
+        self,
+        attempt_id: str,
+        question_id: str,
+        results: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        now = utc_now()
+        evidence_ids: list[str] = []
+        with self.connect() as conn:
+            for result in results:
+                evidence_id = _id()
+                evidence_ids.append(evidence_id)
+                conn.execute(
+                    """INSERT INTO mastery_evidence
+                       (id, knowledge_point_id, question_id, attempt_id, evidence_type, score, weight,
+                        metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        evidence_id,
+                        result["knowledge_point_id"],
+                        question_id,
+                        attempt_id,
+                        result["evidence_type"],
+                        result["score"],
+                        result.get("weight", 1.0),
+                        json.dumps(result.get("metadata", {}), ensure_ascii=False),
+                        now,
+                    ),
+                )
+        return [self.get_mastery_evidence(evidence_id) for evidence_id in evidence_ids]
+
+    def get_mastery_evidence(self, evidence_id: str) -> dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM mastery_evidence WHERE id=?", (evidence_id,)).fetchone()
+        if not row:
+            raise KeyError("mastery_evidence")
+        return _decode(row)  # type: ignore[return-value]
+
+    def list_mastery_evidence(self, point_id: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM mastery_evidence WHERE knowledge_point_id=? ORDER BY created_at", (point_id,)
+            ).fetchall()
+        return [_decode(row) for row in rows]  # type: ignore[misc]
+
+    def update_point_mastery(self, point_id: str, mastery: float, status: str) -> None:
+        point = self.get_knowledge_point(point_id)
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE knowledge_points SET current_mastery=?, updated_at=? WHERE id=?",
+                (mastery, now, point_id),
+            )
+            conn.execute(
+                "UPDATE debts SET current_mastery=?, status=?, updated_at=? WHERE knowledge_point_id=?",
+                (mastery, status, now, point_id),
+            )
+        self.refresh_dependency_flags(point["course_id"])
+
+    def list_dependencies(self, course_id: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT dep.*, point.title AS knowledge_point_title,
+                          prerequisite.title AS prerequisite_title
+                   FROM knowledge_point_dependencies dep
+                   JOIN knowledge_points point ON point.id=dep.knowledge_point_id
+                   JOIN knowledge_points prerequisite ON prerequisite.id=dep.prerequisite_id
+                   WHERE point.course_id=?""",
+                (course_id,),
+            ).fetchall()
+        return [_decode(row) for row in rows]  # type: ignore[misc]
+
+    def refresh_dependency_flags(self, course_id: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """UPDATE debts
+                   SET blocks_next_session = debts.status!='mastered' AND EXISTS (
+                     SELECT 1 FROM knowledge_point_dependencies dep
+                     JOIN debts dependent_debt ON dependent_debt.knowledge_point_id=dep.knowledge_point_id
+                     JOIN knowledge_points dependent_point ON dependent_point.id=dep.knowledge_point_id
+                     WHERE dep.prerequisite_id=debts.knowledge_point_id
+                       AND dependent_point.course_id=?
+                       AND dependent_debt.status!='mastered'
+                   )
+                   WHERE knowledge_point_id IN (SELECT id FROM knowledge_points WHERE course_id=?)""",
+                (course_id, course_id),
+            )
+
+    def create_job(
+        self,
+        kind: str,
+        *,
+        session_id: str | None = None,
+        resource_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        now, job_id = utc_now(), _id()
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO jobs
+                   (id, session_id, resource_id, kind, status, stage, progress, payload_json,
+                    result_json, error, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 'queued', 'queued', 0, ?, NULL, NULL, ?, ?)""",
+                (job_id, session_id, resource_id, kind, json.dumps(payload or {}), now, now),
+            )
+        return self.get_job(job_id)
+
+    def get_job(self, job_id: str) -> dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not row:
+            raise KeyError("job")
+        return _decode(row)  # type: ignore[return-value]
+
+    def list_jobs(self, session_id: str | None = None) -> list[dict[str, Any]]:
+        query, args = "SELECT * FROM jobs", ()
+        if session_id:
+            query, args = query + " WHERE session_id=?", (session_id,)
+        with self.connect() as conn:
+            rows = conn.execute(query + " ORDER BY created_at DESC", args).fetchall()
+        return [_decode(row) for row in rows]  # type: ignore[misc]
+
+    def update_job(
+        self,
+        job_id: str,
+        *,
+        status: str | None = None,
+        stage: str | None = None,
+        progress: int | None = None,
+        result: Any = None,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        current = self.get_job(job_id)
+        with self.connect() as conn:
+            conn.execute(
+                """UPDATE jobs SET status=?, stage=?, progress=?, result_json=?, error=?, updated_at=?
+                   WHERE id=?""",
+                (
+                    status or current["status"],
+                    stage or current["stage"],
+                    progress if progress is not None else current["progress"],
+                    json.dumps(result, ensure_ascii=False)
+                    if result is not None
+                    else (json.dumps(current["result"], ensure_ascii=False) if current.get("result") is not None else None),
+                    error,
+                    utc_now(),
+                    job_id,
+                ),
+            )
+        return self.get_job(job_id)
 
     def update_session_scores(self, session_id: str, reconstruction: int, coverage: int) -> None:
         with self.connect() as conn:

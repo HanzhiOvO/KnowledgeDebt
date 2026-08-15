@@ -116,6 +116,38 @@ export interface LearningStep {
   sources: SourceRef[];
 }
 
+export interface AssessmentQuestion {
+  id: string;
+  session_id: string;
+  knowledge_point_ids: string[];
+  prompt: string;
+  level: string;
+  question_type: string;
+  expected_mastery: number;
+  parent_question_id?: string | null;
+  sources: SourceRef[];
+}
+
+export interface Job {
+  id: string;
+  kind: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  stage: string;
+  progress: number;
+  error?: string | null;
+  result?: Record<string, unknown> | null;
+}
+
+export interface ConsentManifest {
+  operation: string;
+  provider: string;
+  external: boolean;
+  resources: Array<{ id: string; name: string; type: string }>;
+  will_send: string[];
+  will_not_send: string[];
+  confirmation_required: boolean;
+}
+
 export interface SessionDetail extends SessionSummary {
   notes: string;
   resources: Resource[];

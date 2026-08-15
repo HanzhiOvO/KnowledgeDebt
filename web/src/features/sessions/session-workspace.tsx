@@ -3,13 +3,17 @@
 import { useState } from "react";
 
 import { ProgressRing } from "@/components/progress-ring";
-import type { SessionDetail, SourceRef } from "@/types/domain";
+import { mutate } from "@/lib/client-api";
+import type { AssessmentQuestion, SessionDetail, SourceRef } from "@/types/domain";
+import { useRouter } from "next/navigation";
+import { AssessmentPanel } from "./assessment-panel";
+import { JobAction } from "./job-action";
 import { ResourcePanel } from "./resource-panel";
 
 const tabs = ["概览", "资料", "课堂还原", "学习路径", "验收"] as const;
 type Tab = (typeof tabs)[number];
 
-export function SessionWorkspace({ session }: { session: SessionDetail }) {
+export function SessionWorkspace({ session, questions }: { session: SessionDetail; questions: AssessmentQuestion[] }) {
   const [tab, setTab] = useState<Tab>("概览");
 
   return (
@@ -28,7 +32,7 @@ export function SessionWorkspace({ session }: { session: SessionDetail }) {
         {tab === "资料" ? <ResourcePanel sessionId={session.id} resources={session.resources} /> : null}
         {tab === "课堂还原" ? <ReconstructionView session={session} /> : null}
         {tab === "学习路径" ? <LearningPath session={session} /> : null}
-        {tab === "验收" ? <AssessmentIntro session={session} /> : null}
+        {tab === "验收" ? <AssessmentPanel sessionId={session.id} questions={questions} knowledgePoints={session.knowledge_points} /> : null}
       </section>
     </>
   );
@@ -64,7 +68,7 @@ function Overview({ session }: { session: SessionDetail }) {
 
 function ReconstructionView({ session }: { session: SessionDetail }) {
   const reconstruction = session.reconstruction;
-  if (!reconstruction) return <EmptyPane title="尚未还原课堂" detail="添加至少一份证据后运行分析；没有证据时系统不会编造课堂内容。" />;
+  if (!reconstruction) return <div className="empty-pane"><span className="empty-glyph">∅</span><h2>尚未还原课堂</h2><p>添加至少一份证据后运行分析；没有证据时系统不会编造课堂内容。</p><JobAction sessionId={session.id} kind="analysis" label="运行课堂分析" /></div>;
   return (
     <div className="reconstruction-layout">
       <div><span className="eyebrow">EVIDENCE-BACKED RECONSTRUCTION</span><h2>{reconstruction.title}</h2><p className="lead">{reconstruction.summary}</p></div>
@@ -86,29 +90,21 @@ function ReconstructionView({ session }: { session: SessionDetail }) {
 }
 
 function LearningPath({ session }: { session: SessionDetail }) {
+  const router = useRouter();
   if (!session.learning_steps.length) return <EmptyPane title="学习路径尚未生成" detail="路径会从零解释，并把每个结论绑定回真实课程资料。" />;
+  async function complete(stepId: string) {
+    await mutate(`/learning-steps/${stepId}/complete`, { method: "POST" });
+    router.refresh();
+  }
   return (
     <div className="learning-list">
       {session.learning_steps.map((step) => (
         <article className={step.completed ? "learning-step completed" : "learning-step"} key={step.id}>
           <span className="step-number">{String(step.position).padStart(2, "0")}</span>
           <div><span className="eyebrow">{step.estimated_minutes} MIN</span><h3>{step.title}</h3><p>{step.brief_explanation}</p><details><summary>展开解释</summary><p>{step.full_explanation}</p><SourceList sources={step.sources} /></details></div>
-          <span className="step-state">{step.completed ? "已学习" : "待学习"}</span>
+          <button className="step-state" disabled={step.completed} onClick={() => complete(step.id)}>{step.completed ? "✓ 已学习" : "标记学完"}</button>
         </article>
       ))}
-    </div>
-  );
-}
-
-function AssessmentIntro({ session }: { session: SessionDetail }) {
-  const open = session.debts.filter((item) => item.status !== "mastered");
-  return (
-    <div className="assessment-intro">
-      <span className="eyebrow">MASTERY ASSESSMENT</span>
-      <h2>看过不等于掌握</h2>
-      <p>验收题必须来自当前 Session 的真实证据，并可覆盖多个关联知识点。错误会触发针对性追问与补课，不会一题直接清空所有债务。</p>
-      <div className="assessment-summary"><strong>{open.length}</strong><span>个知识点仍需证据</span></div>
-      <button className="button primary" disabled={!session.knowledge_points.length}>开始自适应验收</button>
     </div>
   );
 }

@@ -1,5 +1,6 @@
 from app.models import DEFAULT_PROFILE, DebtStatus
 from app.scoring import (
+    aggregate_mastery,
     debt_status,
     learning_coverage,
     reconstruction_score,
@@ -43,7 +44,15 @@ def test_learning_coverage_is_independent_and_saturating():
 
 
 def test_mastery_and_debt_status_respect_target_level():
-    assert update_mastery(0, 0.9, 2) == 2
+    assert update_mastery(0, 0.9, 2) == 1.17
+    assert aggregate_mastery([{"score": 1, "evidence_type": "understanding"}], 2) == 1.99
+    assert aggregate_mastery(
+        [
+            {"score": 0.9, "evidence_type": "understanding"},
+            {"score": 0.9, "evidence_type": "application"},
+        ],
+        2,
+    ) == 2
     assert debt_status(2, 2) == DebtStatus.MASTERED
     assert debt_status(1.2, 3) == DebtStatus.PARTIAL
     assert debt_status(0, 3, attempted=False) == DebtStatus.UNSEEN

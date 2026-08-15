@@ -2,6 +2,7 @@ import "server-only";
 
 import type {
   ApiResult,
+  AssessmentQuestion,
   Course,
   Debt,
   HomePayload,
@@ -44,6 +45,10 @@ export function getCourse(courseId: string) {
 
 export function getSession(sessionId: string) {
   return request<SessionDetail>(`/sessions/${sessionId}`);
+}
+
+export function getAssessment(sessionId: string) {
+  return request<AssessmentQuestion[]>(`/sessions/${sessionId}/assessment`);
 }
 
 export function getDebts() {

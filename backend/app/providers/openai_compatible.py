@@ -130,8 +130,8 @@ JSON schema: {json.dumps(ReconstructionDraft.model_json_schema(), ensure_ascii=F
     async def generate_questions(
         self, session: dict, evidence: list[dict], knowledge_points: list[dict]
     ) -> list[QuestionDraft]:
-        prompt = f"""Create 3-5 high-information mastery questions for this session. Cover recall, understanding, and application as appropriate.
-Every question must map to an exact knowledge_point_title below and cite real supplied resource IDs. Do not exceed expected mastery.
+        prompt = f"""Create 3-5 high-information adaptive mastery questions for this session. Cover recall, understanding, and application as appropriate.
+Each question may cover one or more tightly related knowledge_point_titles, but every title must exactly match the supplied list. Cite real supplied locators and do not exceed any covered point's expected mastery.
 Also create a reference answer and explicit rubric criteria. Reject tempting but out-of-scope material.
 Knowledge points: {json.dumps(knowledge_points, ensure_ascii=False)}
 Course evidence: {self._evidence_text(evidence)}
@@ -141,6 +141,7 @@ JSON schema: {json.dumps(QuestionList.model_json_schema(), ensure_ascii=False)}"
     async def evaluate_answer(self, question: dict, answer: str, evidence: list[dict]) -> EvaluationResult:
         prompt = f"""Evaluate the student's answer semantically, not by string equality. Check each rubric item, logic, and missing conditions.
 Do not penalize equivalent wording. Do not require anything outside the cited evidence.
+Return one point_results entry for every knowledge point covered by the question, with an evidence type that reflects what the answer demonstrated.
 Question: {json.dumps(question, ensure_ascii=False)}
 Student answer: {answer}
 Relevant evidence: {self._evidence_text(evidence)}

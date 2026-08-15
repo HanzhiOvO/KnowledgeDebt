@@ -5,7 +5,7 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -18,6 +18,9 @@ from .models import (
     CourseCreate,
     CourseProfileUpdate,
     EvidenceLevel,
+    JobCreate,
+    JobKind,
+    JobStatus,
     RemediationRequest,
     ResourceQualityUpdate,
     ResourceType,
@@ -194,6 +197,42 @@ def create_app(
     def get_session(session_id: str) -> dict:
         return database.get_session(session_id)
 
+    @app.get("/sessions/{session_id}/consent-manifest")
+    def consent_manifest(session_id: str, operation: str, resource_id: str | None = None) -> dict:
+        session = database.get_session(session_id)
+        if operation not in {"analysis", "assessment", "transcription", "indexing"}:
+            raise HTTPException(status_code=422, detail="unsupported operation")
+        provider = service.ai
+        provider_name = settings.ai_provider
+        resources = session["resources"]
+        sends = ["Session title and notes", "retrieved transcript segments", "retrieved document chunks"]
+        does_not_send = ["local filesystem paths", "unselected document chunks", "original audio/video binaries"]
+        if operation == "transcription":
+            provider = service.asr
+            provider_name = settings.asr_provider
+            resources = [item for item in resources if item["id"] == resource_id]
+            if not resources:
+                raise HTTPException(status_code=422, detail="select a Session audio or video resource")
+            sends = ["the selected original audio/video binary", "its MIME type and filename"]
+            does_not_send = ["other Session resources", "course history", "local filesystem paths"]
+        elif operation == "indexing":
+            provider = service.embeddings
+            provider_name = settings.embedding_provider
+            resources = [item for item in resources if not resource_id or item["id"] == resource_id]
+            sends = ["text chunks from the listed resources"]
+            does_not_send = ["original files", "audio/video binaries", "local filesystem paths"]
+        return {
+            "operation": operation,
+            "provider": provider_name,
+            "external": bool(getattr(provider, "requires_external_upload", False)),
+            "resources": [
+                {"id": item["id"], "name": item["name"], "type": item["type"]} for item in resources
+            ],
+            "will_send": sends,
+            "will_not_send": does_not_send,
+            "confirmation_required": bool(getattr(provider, "requires_external_upload", False)),
+        }
+
     @app.post("/sessions/{session_id}/resources/upload", status_code=201)
     async def upload_resource(
         session_id: str,
@@ -316,6 +355,90 @@ def create_app(
     async def analyze(session_id: str, payload: AnalysisRequest) -> dict:
         _permission(payload.confirm_external_upload, service.ai)
         return await service.analyze(session_id)
+
+    async def run_transcription_job(job_id: str, resource_id: str) -> None:
+        job = database.get_job(job_id)
+        if job["status"] == JobStatus.CANCELLED.value:
+            return
+        try:
+            database.update_job(job_id, status="running", stage="materializing_media", progress=10)
+            resource = database.get_resource(resource_id)
+            if resource["local_path"]:
+                media_path = Path(resource["local_path"])
+            else:
+                media_path = storage.materialize(
+                    StoredObject(provider=resource["storage_provider"], key=resource["storage_key"])
+                )
+            database.update_job(job_id, stage="transcribing", progress=25)
+            segments = await service.asr.transcribe(str(media_path), resource["mime_type"])
+            database.save_transcript(resource_id, [item.model_dump() for item in segments])
+            service.refresh_scores(resource["session_id"])
+            database.update_job(
+                job_id,
+                status="succeeded",
+                stage="complete",
+                progress=100,
+                result={"segment_count": len(segments)},
+            )
+        except Exception as exc:
+            database.update_job(job_id, status="failed", stage="failed", error=str(exc))
+
+    async def run_indexing_job(job_id: str, resource_id: str) -> None:
+        try:
+            database.update_job(job_id, status="running", stage="embedding_chunks", progress=30)
+            count = await service.retriever.index_resource(resource_id)
+            database.update_job(
+                job_id,
+                status="succeeded",
+                stage="complete",
+                progress=100,
+                result={"indexed_chunk_count": count},
+            )
+        except Exception as exc:
+            database.update_job(job_id, status="failed", stage="failed", error=str(exc))
+
+    @app.post("/sessions/{session_id}/jobs", status_code=202)
+    def create_job(session_id: str, payload: JobCreate, background: BackgroundTasks) -> dict:
+        database.get_session(session_id)
+        if payload.kind in {JobKind.ANALYSIS, JobKind.ASSESSMENT}:
+            _permission(payload.confirm_external_upload, service.ai)
+        elif payload.kind == JobKind.TRANSCRIPTION:
+            _permission(payload.confirm_external_upload, service.asr)
+        if payload.kind in {JobKind.TRANSCRIPTION, JobKind.INDEXING}:
+            if not payload.resource_id:
+                raise HTTPException(status_code=422, detail="resource_id is required for this job")
+            resource = database.get_resource(payload.resource_id)
+            if resource["session_id"] != session_id:
+                raise HTTPException(status_code=422, detail="resource does not belong to this Session")
+        job = database.create_job(
+            payload.kind.value,
+            session_id=session_id,
+            resource_id=payload.resource_id,
+            payload={"confirmed_external_upload": payload.confirm_external_upload},
+        )
+        if payload.kind in {JobKind.ANALYSIS, JobKind.ASSESSMENT}:
+            background.add_task(service.run_job, job["id"])
+        elif payload.kind == JobKind.TRANSCRIPTION:
+            background.add_task(run_transcription_job, job["id"], payload.resource_id)
+        else:
+            background.add_task(run_indexing_job, job["id"], payload.resource_id)
+        return job
+
+    @app.get("/jobs/{job_id}")
+    def get_job(job_id: str) -> dict:
+        return database.get_job(job_id)
+
+    @app.get("/sessions/{session_id}/jobs")
+    def list_jobs(session_id: str) -> list[dict]:
+        database.get_session(session_id)
+        return database.list_jobs(session_id)
+
+    @app.post("/jobs/{job_id}/cancel")
+    def cancel_job(job_id: str) -> dict:
+        job = database.get_job(job_id)
+        if job["status"] in {JobStatus.SUCCEEDED.value, JobStatus.FAILED.value}:
+            raise HTTPException(status_code=409, detail="completed jobs cannot be cancelled")
+        return database.update_job(job_id, status="cancelled", stage="cancelled")
 
     @app.post("/sessions/{session_id}/assessment", status_code=201)
     async def generate_assessment(session_id: str, payload: AnalysisRequest) -> list[dict]:
