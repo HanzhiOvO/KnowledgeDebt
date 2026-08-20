@@ -61,6 +61,20 @@ flowchart LR
 
 需要 Python 3.12+、Node.js 24+、npm 11+。
 
+### 一键启动
+
+```bash
+git clone https://github.com/HanzhiOvO/KnowledgeDebt.git
+cd KnowledgeDebt
+./start.sh
+```
+
+脚本会自动创建 Python 虚拟环境、安装有变化的后端与 Web 依赖、从示例生成 `.env`，同时启动 FastAPI 与 Next.js，并在就绪后打开 `http://localhost:3000`。按 `Ctrl+C` 可同时停止服务。
+
+不希望自动打开浏览器时使用 `./start.sh --no-browser`；依赖已经准备好时可使用 `./start.sh --skip-install`。
+
+### 手动启动
+
 ```bash
 git clone https://github.com/HanzhiOvO/KnowledgeDebt.git
 cd KnowledgeDebt
