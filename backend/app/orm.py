@@ -122,3 +122,105 @@ class JobORM(Base):
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[str] = mapped_column(Text)
     updated_at: Mapped[str] = mapped_column(Text)
+
+
+class ProviderProfileORM(Base):
+    __tablename__ = "provider_profiles"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    name: Mapped[str] = mapped_column(Text)
+    vendor: Mapped[str] = mapped_column(Text)
+    adapter: Mapped[str] = mapped_column(Text)
+    base_url: Mapped[str] = mapped_column(Text, default="")
+    region: Mapped[str | None] = mapped_column(Text)
+    credential_ciphertext: Mapped[str | None] = mapped_column(Text)
+    credential_reference: Mapped[str | None] = mapped_column(Text)
+    default_model: Mapped[str] = mapped_column(Text, default="")
+    capabilities_json: Mapped[str] = mapped_column(Text, default="[]")
+    external: Mapped[int] = mapped_column(Integer, default=1)
+    enabled: Mapped[int] = mapped_column(Integer, default=1)
+    implementation_status: Mapped[str] = mapped_column(Text, default="available")
+    last_test_status: Mapped[str | None] = mapped_column(Text)
+    last_test_message: Mapped[str | None] = mapped_column(Text)
+    last_tested_at: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[str] = mapped_column(Text)
+
+
+class AcademicTermORM(Base):
+    __tablename__ = "academic_terms"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    name: Mapped[str] = mapped_column(Text)
+    starts_on: Mapped[str] = mapped_column(Text)
+    ends_on: Mapped[str] = mapped_column(Text)
+    timezone: Mapped[str] = mapped_column(Text)
+    current: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[str] = mapped_column(Text)
+
+
+class ScheduleRuleORM(Base):
+    __tablename__ = "schedule_rules"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    term_id: Mapped[str] = mapped_column(ForeignKey("academic_terms.id", ondelete="CASCADE"))
+    course_id: Mapped[str | None] = mapped_column(ForeignKey("courses.id", ondelete="SET NULL"))
+    course_name: Mapped[str] = mapped_column(Text)
+    course_code: Mapped[str | None] = mapped_column(Text)
+    class_name: Mapped[str | None] = mapped_column(Text)
+    teacher: Mapped[str | None] = mapped_column(Text)
+    campus: Mapped[str | None] = mapped_column(Text)
+    building: Mapped[str | None] = mapped_column(Text)
+    room: Mapped[str | None] = mapped_column(Text)
+    weekday: Mapped[int] = mapped_column(Integer)
+    start_period: Mapped[int] = mapped_column(Integer)
+    end_period: Mapped[int] = mapped_column(Integer)
+    weeks_json: Mapped[str] = mapped_column(Text)
+    odd_even: Mapped[str] = mapped_column(Text, default="all")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    external_id: Mapped[str] = mapped_column(Text)
+    aliases_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[str] = mapped_column(Text)
+
+
+class ScheduleOccurrenceORM(Base):
+    __tablename__ = "schedule_occurrences"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    rule_id: Mapped[str] = mapped_column(ForeignKey("schedule_rules.id", ondelete="CASCADE"))
+    course_id: Mapped[str | None] = mapped_column(ForeignKey("courses.id", ondelete="SET NULL"))
+    occurrence_date: Mapped[str] = mapped_column(Text)
+    starts_at: Mapped[str] = mapped_column(Text)
+    ends_at: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text, default="scheduled")
+    source_kind: Mapped[str] = mapped_column(Text, default="regular")
+    campus: Mapped[str | None] = mapped_column(Text)
+    building: Mapped[str | None] = mapped_column(Text)
+    room: Mapped[str | None] = mapped_column(Text)
+    teacher: Mapped[str | None] = mapped_column(Text)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    external_id: Mapped[str] = mapped_column(Text)
+    adjustment_of_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[str] = mapped_column(Text)
+
+
+class ReviewItemORM(Base):
+    __tablename__ = "review_items"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    kind: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text, default="pending")
+    subject_type: Mapped[str] = mapped_column(Text)
+    subject_id: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(Text)
+    proposed_value: Mapped[str | None] = mapped_column(Text)
+    confidence: Mapped[float] = mapped_column(Float, default=0)
+    reasons_json: Mapped[str] = mapped_column(Text, default="[]")
+    navigation_path: Mapped[str | None] = mapped_column(Text)
+    decision_reason: Mapped[str | None] = mapped_column(Text)
+    decided_at: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[str] = mapped_column(Text)

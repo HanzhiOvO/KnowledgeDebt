@@ -40,6 +40,18 @@ services:
       KNOWLEDGEDEBT_STORAGE_PROVIDER: ${KNOWLEDGEDEBT_STORAGE_PROVIDER:-local}
       KNOWLEDGEDEBT_S3_BUCKET: ${KNOWLEDGEDEBT_S3_BUCKET:-}
       KNOWLEDGEDEBT_S3_ENDPOINT_URL: ${KNOWLEDGEDEBT_S3_ENDPOINT_URL:-}
+      # 本地 ASR：留空即不启用；私网服务地址示例 http://asr:8080/v1
+      KNOWLEDGEDEBT_LOCAL_ASR_BINARY: ${KNOWLEDGEDEBT_LOCAL_ASR_BINARY:-whisper-cli}
+      KNOWLEDGEDEBT_LOCAL_ASR_MODEL: ${KNOWLEDGEDEBT_LOCAL_ASR_MODEL:-}
+      KNOWLEDGEDEBT_LOCAL_ASR_MODEL_DIR: ${KNOWLEDGEDEBT_LOCAL_ASR_MODEL_DIR:-}
+      KNOWLEDGEDEBT_LOCAL_ASR_LANGUAGE: ${KNOWLEDGEDEBT_LOCAL_ASR_LANGUAGE:-zh}
+      KNOWLEDGEDEBT_LOCAL_ASR_THREADS: ${KNOWLEDGEDEBT_LOCAL_ASR_THREADS:-0}
+      KNOWLEDGEDEBT_LOCAL_ASR_TIMEOUT_SECONDS: ${KNOWLEDGEDEBT_LOCAL_ASR_TIMEOUT_SECONDS:-3600}
+      KNOWLEDGEDEBT_LOCAL_ASR_SERVICE_URL: ${KNOWLEDGEDEBT_LOCAL_ASR_SERVICE_URL:-}
+      KNOWLEDGEDEBT_LOCAL_ASR_SERVICE_MODEL: ${KNOWLEDGEDEBT_LOCAL_ASR_SERVICE_MODEL:-}
+      # whisper.cpp 自带 server 用 /inference；OpenAI 兼容服务保持默认。
+      KNOWLEDGEDEBT_LOCAL_ASR_SERVICE_PATH: ${KNOWLEDGEDEBT_LOCAL_ASR_SERVICE_PATH:-/audio/transcriptions}
+      KNOWLEDGEDEBT_LOCAL_ASR_SERVICE_CONVERT_WAV: ${KNOWLEDGEDEBT_LOCAL_ASR_SERVICE_CONVERT_WAV:-false}
     volumes:
       - resource_data:/data
     depends_on:
@@ -66,6 +78,26 @@ services:
     cpus: 0.5
     mem_limit: 512m
 
+  # 可选的本地转写工作进程；默认不启动，需显式 `docker compose --profile local-asr up`。
+  # 未在交接环境验证（交接机器没有 Docker），验证清单见 deploy/local-asr/README.md。
+  asr:
+    profiles: ["local-asr"]
+    build:
+      context: deploy/local-asr
+    restart: unless-stopped
+    environment:
+      WHISPER_MODEL: /models/${KNOWLEDGEDEBT_LOCAL_ASR_MODEL_FILE:-ggml-medium.bin}
+      WHISPER_LANGUAGE: ${KNOWLEDGEDEBT_LOCAL_ASR_LANGUAGE:-zh}
+      WHISPER_THREADS: ${KNOWLEDGEDEBT_LOCAL_ASR_THREADS:-4}
+    volumes:
+      - asr_models:/models
+    expose:
+      - "8080"
+    # 转写是 CPU 密集任务：先限制单并发，避免和 API/Web 抢占资源。
+    cpus: ${KNOWLEDGEDEBT_LOCAL_ASR_CPUS:-4.0}
+    mem_limit: ${KNOWLEDGEDEBT_LOCAL_ASR_MEMORY:-6g}
+
 volumes:
   postgres_data:
   resource_data:
+  asr_models:

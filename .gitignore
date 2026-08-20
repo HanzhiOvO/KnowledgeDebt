@@ -36,6 +36,10 @@ web/.next/
 web/node_modules/
 web/.env.local
 
+# 本地交接材料：含本机绝对路径与未提交状态，不进入公开仓库
+DEEPSEEK_HANDOFF.md
+KnowledgeDebt-DeepSeek-Handoff.zip
+
 # 编辑器与操作系统文件
 .idea/
 .vscode/

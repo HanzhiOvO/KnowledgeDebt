@@ -4,9 +4,10 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const navigation = [
-  { href: "/", label: "今天", glyph: "⌂" },
-  { href: "/courses", label: "课程", glyph: "◇" },
-  { href: "/debts", label: "债务", glyph: "↗" },
+  { href: "/", label: "总览", glyph: "⌂" },
+  { href: "/schedule", label: "课表", glyph: "▦" },
+  { href: "/courses", label: "课程", glyph: "◫" },
+  { href: "/review", label: "待审核", glyph: "◎" },
   { href: "/settings", label: "设置", glyph: "⚙" },
 ];
 
@@ -21,10 +22,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="app-shell">
       <aside className="sidebar">
         <Link className="brand" href="/" aria-label="KnowledgeDebt 首页">
-          <span className="brand-mark">KD</span>
+          <span className="brand-mark" aria-hidden>K</span>
           <span>
             <strong>KnowledgeDebt</strong>
-            <small>evidence → mastery</small>
+            <small>自动化课程工作台 · v0.2</small>
           </span>
         </Link>
         <nav className="nav-list" aria-label="主导航">
@@ -39,11 +40,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </Link>
           ))}
         </nav>
+        <Link className="quick-capture" href="/review#inbox">
+          <span aria-hidden>＋</span>
+          <span><strong>快速收件</strong><small>无需先选课程</small></span>
+        </Link>
         <div className="sidebar-note">
           <span className="status-dot" />
           <div>
-            <strong>Self-hosted</strong>
-            <small>资料默认留在你的服务器</small>
+            <strong>Local-first</strong>
+            <small>外发前逐次确认</small>
           </div>
         </div>
       </aside>

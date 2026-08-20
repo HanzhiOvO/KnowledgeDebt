@@ -1,60 +1,27 @@
-# Privacy and consent model
+# 隐私与数据边界
 
-KnowledgeDebt is privacy-conscious and self-hostable. It is not “offline-only,” and it never treats self-hosting as permission to process other people's classroom data.
+KnowledgeDebt 默认 Local-first：数据库、原始资源、转写片段和学习记录保存在用户选择的本地或自托管存储中。外部 AI / ASR / Embedding 只在具体操作需要时使用。
 
-## Legal and social responsibility
+## 不变量
 
-Before recording or uploading a class, follow applicable law, university policy, course rules, copyright restrictions, and the reasonable expectations of teachers and classmates. Obtain permission when required. Do not upload private notes or copyrighted course material to a server or provider you are not authorized to use.
+- 媒体和资料先保存，再启动提取、匹配或转写；后续失败不得删除原文件；
+- 外部 ASR 未获得本次明确授权前，不创建转写 Job，也不发送媒体；
+- 授权框显示实际 Vendor、Profile、模型、具体资源、发送与不发送的数据；
+- 授权不保存成全局同意，取消只会留下“未转写”状态，可稍后重试；
+- 分析与验收只发送选中的文本或转写证据，不发送无关资源；
+- 外部 Embedding 默认关闭，本地 Hash Embedding 不外发文本；
+- 调用台账不保存 API Key、Authorization、Cookie 或完整请求正文；
+- Provider 密钥只允许 Fernet 加密保存或 `env:VARIABLE` 引用；没有主密钥时拒绝明文入库；
+- 教务连接器不保存账号密码，不猜测接口，不绕过验证码。实时会话未来只允许加密 Cookie/Session，并在失效时要求重新认证。
 
-## Operation-specific consent
+## 浏览器与 API
 
-Before an external provider call, the API returns a consent manifest containing:
+浏览器通过 Next.js 同源 `/api/backend` 代理访问 FastAPI。可选的 `KNOWLEDGEDEBT_ACCESS_TOKEN` 只存在服务端环境中，不下发到客户端。部署到非本机网络时必须使用 HTTPS、强访问令牌、可信反向代理和受限数据库/对象存储。
 
-- the exact operation;
-- every provider involved;
-- the exact resource IDs, names, and types in scope;
-- what derived or original data will be sent;
-- what will not be sent;
-- whether explicit confirmation is required.
+## 课堂录制
 
-The confirmation flag applies to one request or one job. It is stored with job payload metadata for auditability but does not become a blanket preference.
+用户必须遵守所在地法律、学校规定、课程规则和现场其他人的合理预期。在要求取得教师或同学同意的场景中，应在录制前完成授权。KnowledgeDebt 不提供规避系统权限、隐蔽录制或自动上传到第三方的功能。
 
-| Operation | May send | Does not send by design |
-| --- | --- | --- |
-| Analysis | Session title/notes, retrieved transcript segments, retrieved document chunks, retrieval query when external embeddings are selected | original audio/video binaries, local paths, unselected chunks |
-| Assessment / answer evaluation | question, answer, rubric on the server side, relevant Knowledge Points, retrieved evidence | unrelated Sessions, original media binaries, local paths |
-| Transcription | one selected original audio/video object, filename and MIME type | other Session resources, course history, local paths |
-| Indexing | text from chunks of the listed resources | original documents, media binaries, unrelated resources, local paths |
+## 删除与恢复
 
-The default local hash embedding provider avoids external indexing and query calls entirely. If external embeddings are configured, upload only extracts and stores chunks; it does not call the provider automatically.
-
-## Evidence minimization and validation
-
-Retrieval uses two policies. Reconstruction prefers classroom and official Session evidence; learning retrieval may prefer official textbooks and broader course context. Only selected resources and chunks are attached to a provider request.
-
-Provider output is untrusted. The service rejects source references unless they resolve to evidence actually supplied for that operation:
-
-- transcript timestamps must match a stored segment's global time range;
-- PDF page numbers and PPT slide numbers must exist in extracted content;
-- chunk IDs must belong to the cited resource;
-- reconstruction timeline ranges must match a cited transcript segment.
-
-Supplementary sources can support an explanation but cannot be promoted to proof of classroom coverage.
-
-## Secrets and access
-
-- Provider API keys, database credentials, and `KNOWLEDGEDEBT_ACCESS_TOKEN` live in server environment variables.
-- The Next.js same-origin proxy adds the optional bearer token server-side.
-- The backend never returns provider keys.
-- `/health` is public; other endpoints require the token when one is configured.
-- The token model is intended for one self-hosted user. Hosted multi-user deployments need separate identity, tenant isolation, authorization, rate limiting, audit logs, and deletion workflows.
-
-## Storage and deletion expectations
-
-Local uploads, derived PDF images, transcript text, chunks, assessments, and evidence remain in the configured data store until the operator deletes them. S3-compatible deployments should use private buckets, server-side encryption, lifecycle policies, and restricted credentials.
-
-The current `0.x` API does not yet expose a polished end-user deletion workflow. Operators must therefore treat filesystem/bucket and database retention as an explicit deployment responsibility, back them up together, and honor deletion requests across both stores.
-
-## Logging
-
-Application code does not intentionally log API keys or resource bodies. Reverse proxies, provider SDKs, observability agents, and infrastructure may have their own logging behavior; review those systems before processing sensitive course material.
+“拒绝匹配”默认归档收件箱项目而不是删除，允许撤回。自动标题和归档匹配可进入统一待审核中心，支持接受、编辑后接受、拒绝和稍后处理。真正删除媒体或 Provider Profile 应由用户显式操作，并在部署层使用独立备份策略。

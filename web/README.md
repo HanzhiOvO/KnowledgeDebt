@@ -1,26 +1,35 @@
-# Web 主客户端
+# KnowledgeDebt Web 工作台
 
-这里是 KnowledgeDebt 的主要产品界面，使用 Next.js 16、React 19 与 TypeScript 构建。
+这里是 Next.js 16 / React 19 主客户端。v0.2 默认提供五个工作区：**总览、课表、课程、待审核、设置**。
 
-## 本地运行
+从仓库根目录一键启动：
 
-从仓库根目录运行：
+```bash
+./start.sh
+```
+
+只启动 Web：
 
 ```bash
 make web-install
 make web-run
 ```
 
-打开 `http://localhost:3000`。浏览器请求默认通过同源 `/api/backend` 代理到 `http://127.0.0.1:8123`，API Key 与可选访问令牌只保留在服务端。
-
-## 验证
+生产构建验证：
 
 ```bash
 make web-test
 ```
 
-该命令依次执行 ESLint、TypeScript 检查与 Next.js 生产构建。页面与组件位于 `src/app/` 和 `src/features/`；领域类型位于 `src/types/`。
+浏览器只访问同源 `/api/backend` 代理；Provider 密钥和可选 API 访问令牌不会下发到客户端。媒体上传和浏览器录音遵循“原文件先保存、后台再自动化”，外部转写必须逐次确认。
 
-## 部署
+主要目录：
 
-生产构建启用了 Next.js standalone 输出。仓库根目录的 `compose.yaml` 会同时启动 Web、FastAPI 与 PostgreSQL。完整说明见 [`../docs/deployment.md`](../docs/deployment.md)。
+```text
+src/app/                  路由、加载与错误边界
+src/features/home/        总览与自动化队列
+src/features/schedule/    周课表与 fixture 导入
+src/features/review/      统一待审核与全局收件箱
+src/features/sessions/    Session、录音转写、学习与验收
+src/features/settings/    Provider、教务、隐私与用量
+```

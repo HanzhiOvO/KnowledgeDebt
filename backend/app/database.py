@@ -10,6 +10,7 @@ from typing import Any
 
 from sqlalchemy import Connection, Engine, create_engine, text
 
+from .automation_schema import AUTOMATION_SCHEMA
 from .models import DEFAULT_PROFILE, CourseCreate, SessionCreate, utc_now
 
 SCHEMA = """
@@ -135,7 +136,20 @@ def _decode(row: sqlite3.Row | Mapping[str, Any] | None) -> dict[str, Any] | Non
         if key.endswith("_json"):
             raw = result.pop(key)
             result[key.removesuffix("_json")] = json.loads(raw) if raw is not None else None
-    for key in ("completed", "active", "blocks_next_session"):
+    for key in (
+        "completed",
+        "active",
+        "blocks_next_session",
+        "external",
+        "enabled",
+        "current",
+        "reauth_required",
+        "title_locked",
+        "auto_transcribe",
+        "locked",
+        "archived",
+        "cost_known",
+    ):
         if key in result:
             result[key] = bool(result[key])
     return result
@@ -209,7 +223,7 @@ class Database:
             self.path = Path(path)
             self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
-            conn.executescript(SCHEMA)
+            conn.executescript(SCHEMA + AUTOMATION_SCHEMA)
             if not self.uses_sqlalchemy:
                 self._migrate_legacy_schema(conn)
 
@@ -916,6 +930,17 @@ class Database:
                     utc_now(),
                     job_id,
                 ),
+            )
+        return self.get_job(job_id)
+
+    def cancel_job(self, job_id: str) -> dict[str, Any]:
+        """Cancel an active job without overwriting a job that already finished."""
+        self.get_job(job_id)
+        with self.connect() as conn:
+            conn.execute(
+                """UPDATE jobs SET status='cancelled', stage='cancelled', updated_at=?
+                   WHERE id=? AND status IN ('queued', 'running')""",
+                (utc_now(), job_id),
             )
         return self.get_job(job_id)
 

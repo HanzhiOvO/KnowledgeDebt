@@ -10,7 +10,7 @@ import { AssessmentPanel } from "./assessment-panel";
 import { JobAction } from "./job-action";
 import { ResourcePanel } from "./resource-panel";
 
-const tabs = ["概览", "资料", "课堂还原", "学习路径", "验收"] as const;
+const tabs = ["概览", "录音与转写", "资料", "课堂还原", "学习", "验收"] as const;
 type Tab = (typeof tabs)[number];
 
 export function SessionWorkspace({ session, questions }: { session: SessionDetail; questions: AssessmentQuestion[] }) {
@@ -29,9 +29,10 @@ export function SessionWorkspace({ session, questions }: { session: SessionDetai
       </div>
       <section className="workspace-panel panel">
         {tab === "概览" ? <Overview session={session} /> : null}
-        {tab === "资料" ? <ResourcePanel sessionId={session.id} resources={session.resources} /> : null}
+        {tab === "录音与转写" ? <ResourcePanel mode="media" sessionId={session.id} resources={session.resources} /> : null}
+        {tab === "资料" ? <ResourcePanel mode="resources" sessionId={session.id} resources={session.resources} /> : null}
         {tab === "课堂还原" ? <ReconstructionView session={session} /> : null}
-        {tab === "学习路径" ? <LearningPath session={session} /> : null}
+        {tab === "学习" ? <LearningPath session={session} /> : null}
         {tab === "验收" ? <AssessmentPanel sessionId={session.id} questions={questions} knowledgePoints={session.knowledge_points} /> : null}
       </section>
     </>

@@ -64,6 +64,51 @@ class JobStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class TranscriptionState(StrEnum):
+    SAVING = "saving"
+    SAVED = "saved"
+    PREPARING = "preparing"
+    AWAITING_CONSENT = "awaiting_consent"
+    QUEUED = "queued"
+    TRANSCRIBING = "transcribing"
+    PARTIAL = "partial"
+    TRANSCRIBED = "transcribed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class ProviderCapability(StrEnum):
+    STRUCTURED_GENERATION = "structured_generation"
+    CHAT_ANALYSIS = "chat_analysis"
+    EMBEDDINGS = "embeddings"
+    AUDIO_TRANSCRIPTION = "audio_transcription"
+    ASYNC_AUDIO_TRANSCRIPTION = "async_audio_transcription"
+    SEGMENT_TIMESTAMPS = "segment_timestamps"
+    SPEAKER_DIARIZATION = "speaker_diarization"
+    LONG_AUDIO = "long_audio"
+    HOTWORDS = "hotwords"
+
+
+class ProviderGroup(StrEnum):
+    AI = "ai"
+    ASR = "asr"
+    EMBEDDING = "embedding"
+
+
+class ReviewKind(StrEnum):
+    ARCHIVE_MATCH = "archive_match"
+    SESSION_TOPIC = "session_topic"
+    SCHEDULE_CONFLICT = "schedule_conflict"
+    TRANSCRIPTION_FAILURE = "transcription_failure"
+
+
+class ReviewStatus(StrEnum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    LATER = "later"
+
+
 DEFAULT_PROFILE = {
     "classroom": 40.0,
     "official_session": 35.0,
@@ -103,6 +148,111 @@ class SessionCreate(BaseModel):
     starts_at: str | None = None
     ends_at: str | None = None
     notes: str = ""
+
+
+class ProviderProfileCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    vendor: str = Field(min_length=1, max_length=80)
+    adapter: str = Field(default="openai_compatible", min_length=1, max_length=80)
+    base_url: str = Field(default="", max_length=1000)
+    region: str | None = Field(default=None, max_length=120)
+    credential: str | None = Field(default=None, min_length=1, max_length=10000)
+    credential_reference: str | None = Field(default=None, max_length=240)
+    default_model: str = Field(default="", max_length=240)
+    capabilities: list[ProviderCapability] = Field(default_factory=list)
+    external: bool = True
+    enabled: bool = True
+
+    @model_validator(mode="after")
+    def validate_credential_source(self) -> ProviderProfileCreate:
+        if self.credential and self.credential_reference:
+            raise ValueError("credential and credential_reference are mutually exclusive")
+        return self
+
+
+class ProviderProfileUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    base_url: str | None = Field(default=None, max_length=1000)
+    region: str | None = Field(default=None, max_length=120)
+    credential: str | None = Field(default=None, min_length=1, max_length=10000)
+    credential_reference: str | None = Field(default=None, max_length=240)
+    default_model: str | None = Field(default=None, max_length=240)
+    capabilities: list[ProviderCapability] | None = None
+    external: bool | None = None
+    enabled: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_credential_source(self) -> ProviderProfileUpdate:
+        if self.credential and self.credential_reference:
+            raise ValueError("credential and credential_reference are mutually exclusive")
+        return self
+
+
+class ProviderDefaultUpdate(BaseModel):
+    profile_id: str
+
+
+class AcademicTermCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    starts_on: str
+    ends_on: str
+    timezone: str = "Asia/Shanghai"
+    current: bool = True
+
+
+class ScheduleConnectionUpdate(BaseModel):
+    connector: str = "zjsu_undergraduate_v9"
+    display_name: str = "浙江工商大学本科教务系统"
+    sync_interval_minutes: int = Field(default=360, ge=30, le=10080)
+
+
+class ScheduleRuleCreate(BaseModel):
+    term_id: str
+    course_name: str = Field(min_length=1, max_length=160)
+    course_code: str | None = Field(default=None, max_length=80)
+    class_name: str | None = Field(default=None, max_length=160)
+    teacher: str | None = Field(default=None, max_length=160)
+    campus: str | None = Field(default=None, max_length=160)
+    building: str | None = Field(default=None, max_length=160)
+    room: str | None = Field(default=None, max_length=160)
+    weekday: int = Field(ge=1, le=7)
+    start_period: int = Field(ge=1, le=30)
+    end_period: int = Field(ge=1, le=30)
+    weeks: list[int] = Field(min_length=1)
+    odd_even: str = "all"
+    notes: str = ""
+    external_id: str = Field(min_length=1, max_length=240)
+    aliases: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_periods_and_weeks(self) -> ScheduleRuleCreate:
+        if self.end_period < self.start_period:
+            raise ValueError("end_period must not be before start_period")
+        if any(week < 1 or week > 60 for week in self.weeks):
+            raise ValueError("weeks must be between 1 and 60")
+        if self.odd_even not in {"all", "odd", "even"}:
+            raise ValueError("odd_even must be all, odd or even")
+        return self
+
+
+class OccurrenceMaterializeRequest(BaseModel):
+    reason: str = Field(default="opened", pattern="^(occurred|evidence|opened)$")
+
+
+class InboxDecision(BaseModel):
+    session_id: str | None = None
+    reason: str = "user_review"
+
+
+class ReviewDecision(BaseModel):
+    action: str = Field(pattern="^(accept|edit_accept|reject|later)$")
+    edited_value: str | None = Field(default=None, max_length=500)
+    reason: str = Field(default="", max_length=1000)
+
+
+class SessionTitleUpdate(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    locked: bool = True
 
 
 class CourseProfileUpdate(BaseModel):

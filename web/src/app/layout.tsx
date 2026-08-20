@@ -16,10 +16,10 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "KnowledgeDebt",
+    default: "KnowledgeDebt · 自动化课程工作台",
     template: "%s · KnowledgeDebt",
   },
-  description: "Turn missed classes into an evidence-backed path to mastery.",
+  description: "面向大学生的本地优先课程恢复系统：从课表、课堂证据到真正掌握。",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

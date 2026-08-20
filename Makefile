@@ -1,13 +1,21 @@
-.PHONY: help dev backend-install backend-run backend-test backend-lint migrate web-install web-run web-test legacy-client-get legacy-client-run legacy-client-test compose-up compose-down verify
+.PHONY: help start dev backend-install backend-run backend-test backend-lint migrate web-install web-run web-test legacy-client-get legacy-client-run legacy-client-test compose-up compose-down verify smoke-local-asr
+
+MEDIA ?=
+SECONDS ?= 60
 
 help:
 	@echo "KnowledgeDebt 常用命令"
-	@echo "  make dev             同时启动 FastAPI 与 Next.js 开发服务"
+	@echo "  make start           自动补齐依赖并同时启动 Web 与 API"
+	@echo "  make dev             使用现有依赖同时启动 FastAPI 与 Next.js"
 	@echo "  make verify          运行后端检查、测试与 Web 生产构建"
 	@echo "  make backend-test    运行 Pytest"
 	@echo "  make web-test        运行 ESLint、TypeScript 与 Next.js 构建"
 	@echo "  make migrate         执行 Alembic 数据库迁移"
 	@echo "  make compose-up      构建并启动 Docker Compose 服务"
+	@echo "  make smoke-local-asr MEDIA=录音.aac [SECONDS=60]  本地 ASR 真机速度/质量测试"
+
+start:
+	./start.sh
 
 dev:
 	@$(MAKE) -j2 backend-run web-run
@@ -51,5 +59,9 @@ compose-up:
 
 compose-down:
 	docker compose down
+
+smoke-local-asr:
+	@test -n "$(MEDIA)" || { echo "用法：make smoke-local-asr MEDIA=录音.aac [SECONDS=60]"; exit 1; }
+	.venv/bin/python backend/scripts/local_asr_smoke.py "$(MEDIA)" --seconds $(SECONDS)
 
 verify: backend-lint backend-test web-test

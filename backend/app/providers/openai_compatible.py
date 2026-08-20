@@ -44,7 +44,9 @@ class OpenAICompatibleProvider:
 
     def _headers(self) -> dict[str, str]:
         if not self.api_key:
-            raise ProviderNotConfigured("OPENAI_API_KEY is not configured")
+            raise ProviderNotConfigured(
+                "未配置 OPENAI_API_KEY。请在项目 .env 中填写后重启，再点击“重试”。"
+            )
         return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
 
     async def _structured(self, model_type: type[T], prompt: str) -> T:
@@ -160,16 +162,19 @@ JSON schema: {json.dumps(RemediationDraft.model_json_schema(), ensure_ascii=Fals
 
     async def transcribe(self, path: str, mime_type: str | None) -> list[TranscriptSegment]:
         if not self.api_key:
-            raise ProviderNotConfigured("OPENAI_API_KEY is not configured")
+            raise ProviderNotConfigured(
+                "未配置 OPENAI_API_KEY。请在项目 .env 中填写后重启，再点击“重试”。"
+            )
         headers = {"Authorization": f"Bearer {self.api_key}"}
         file_path = Path(path)
-        async with httpx.AsyncClient(timeout=600) as client, file_path.open("rb") as handle:
-            response = await client.post(
-                f"{self.base_url}/audio/transcriptions",
-                headers=headers,
-                data={"model": self.asr_model, "response_format": "verbose_json"},
-                files={"file": (file_path.name, handle, mime_type or "application/octet-stream")},
-            )
+        async with httpx.AsyncClient(timeout=600) as client:
+            with file_path.open("rb") as handle:
+                response = await client.post(
+                    f"{self.base_url}/audio/transcriptions",
+                    headers=headers,
+                    data={"model": self.asr_model, "response_format": "verbose_json"},
+                    files={"file": (file_path.name, handle, mime_type or "application/octet-stream")},
+                )
             if not response.is_success:
                 raise ProviderRequestError(f"ASR provider returned HTTP {response.status_code}")
             payload: dict[str, Any] = response.json()
