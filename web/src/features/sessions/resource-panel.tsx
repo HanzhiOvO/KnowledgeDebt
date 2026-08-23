@@ -1,41 +1,46 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
+import { BrowserRecorder } from "@/features/sessions/browser-recorder";
 import { mutate, publicApiUrl } from "@/lib/client-api";
-import type { Resource } from "@/types/domain";
+import type { ConsentManifest, Job, Resource, ResourceAutomation } from "@/types/domain";
 
-import { JobAction } from "./job-action";
+const transcriptionLabels: Record<string, string> = {
+  saved: "已保存",
+  preparing: "正在整理",
+  awaiting_consent: "等待授权",
+  awaiting_configuration: "等待配置转写服务",
+  queued: "等待转写",
+  transcribing: "正在转写",
+  partial: "部分完成",
+  transcribed: "已转写",
+  failed: "转写失败",
+  cancelled: "未转写",
+};
 
-export function ResourcePanel({ sessionId, resources }: { sessionId: string; resources: Resource[] }) {
+const terminalTranscriptionStates = ["transcribed", "partial", "failed", "cancelled"];
+
+type TranscriptionSnapshot = {
+  automation: ResourceAutomation;
+  active_job?: Job | null;
+};
+
+async function loadTranscription(resourceId: string): Promise<TranscriptionSnapshot> {
+  const response = await fetch(`${publicApiUrl}/resources/${resourceId}/transcription`, {
+    cache: "no-store",
+  });
+  const body = (await response.json().catch(() => ({}))) as TranscriptionSnapshot & { detail?: string };
+  if (!response.ok) throw new Error(body.detail ?? "无法读取转写状态");
+  return body;
+}
+
+export function ResourcePanel({ sessionId, resources, mode = "resources" }: { sessionId: string; resources: Resource[]; mode?: "media" | "resources" }) {
   const router = useRouter();
   const [error, setError] = useState("");
-  const [linkError, setLinkError] = useState("");
   const [busy, setBusy] = useState(false);
-
-  async function addLink(formData: FormData) {
-    setBusy(true);
-    setLinkError("");
-    try {
-      await mutate<Resource>(`/sessions/${sessionId}/resources/link`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: formData.get("name"),
-          url: formData.get("url"),
-          evidence_level: formData.get("evidence_level"),
-          resource_type: "link",
-          notes: formData.get("notes"),
-        }),
-      });
-      router.refresh();
-    } catch (reason) {
-      setLinkError(reason instanceof Error ? reason.message : "链接保存失败");
-    } finally {
-      setBusy(false);
-    }
-  }
+  const visible = resources.filter((resource) => mode === "media" ? ["audio", "video"].includes(resource.type) : !["audio", "video"].includes(resource.type));
 
   async function upload(formData: FormData) {
     for (const key of ["start_offset", "end_offset", "session_duration"]) {
@@ -58,166 +63,184 @@ export function ResourcePanel({ sessionId, resources }: { sessionId: string; res
     }
   }
 
+  async function addLink(formData: FormData) {
+    setBusy(true);
+    setError("");
+    try {
+      await mutate(`/sessions/${sessionId}/resources/link`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: formData.get("name"),
+          url: formData.get("url"),
+          notes: formData.get("notes") || "",
+          evidence_level: formData.get("evidence_level") || "supplementary",
+          resource_type: "link",
+        }),
+      });
+      router.refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "链接保存失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="resource-layout">
       <div className="resource-list">
-        {resources.length ? resources.map((resource) => {
-          const canTranscribe = ["audio", "video"].includes(resource.type) && !resource.external_url;
-          const canIndex = !["audio", "video", "link"].includes(resource.type) && Boolean(resource.chunks?.length);
-          const rawHref = resource.external_url ?? `${publicApiUrl}/resources/${resource.id}/raw`;
-          const transcriptCount = resource.transcript_segments?.length ?? 0;
-          return (
-            <article className="resource-row" key={resource.id}>
-              <span className="file-icon">{resource.type.slice(0, 3).toUpperCase()}</span>
-              <span className="resource-main">
-                <strong>{resource.name}</strong>
-                <small>{resource.evidence_level} · {resource.upload_state}{transcriptCount ? ` · ${transcriptCount} 转写段` : ""}</small>
-                <span className="resource-actions">
-                  <a className="text-button" href={rawHref} target="_blank" rel="noreferrer">
-                    {resource.external_url ? "打开链接 ↗" : "原始文件"}
-                  </a>
-                  {canTranscribe ? <JobAction sessionId={sessionId} kind="transcription" resourceId={resource.id} label="语音转写" compact /> : null}
-                  {canIndex ? <JobAction sessionId={sessionId} kind="indexing" resourceId={resource.id} label="重建索引" compact /> : null}
-                </span>
-              </span>
-              <span className="quality-chip">{resource.chunks?.length ? `${resource.chunks.length} chunks` : `${Math.round(resource.coverage * resource.quality * resource.relevance * 100)}% 有效`}</span>
-            </article>
-          );
-        }) : <p className="muted">尚无资料。Session 仍然有效，你可以从备注或后续补充开始。</p>}
+        <div className="resource-list-heading"><span><strong>{mode === "media" ? "录音与视频" : "课堂资料"}</strong><small>{visible.length} 个资源</small></span><span className="local-pill small"><i />原文件已保留</span></div>
+        {visible.length ? visible.map((resource) => (
+          <article className="resource-row detailed" key={resource.id}>
+            <span className="file-icon">{resource.type.slice(0, 3).toUpperCase()}</span>
+            <span className="resource-main"><strong>{resource.name}</strong><small>{resource.evidence_level} · {resource.external_url ? "外部链接" : resource.duration_seconds ? `${Math.round(resource.duration_seconds / 60)} 分钟` : resource.upload_state}</small>{resource.external_url ? <span className="resource-actions"><a className="text-button" href={resource.external_url} target="_blank" rel="noreferrer">打开链接</a></span> : null}{resource.automation?.failure_reason ? <span className="resource-error">{resource.automation.failure_reason}</span> : null}</span>
+            {mode === "media" ? <TranscriptionControl key={`${resource.id}:${resource.automation?.transcription_state}:${resource.automation?.last_job_id ?? "none"}`} sessionId={sessionId} resource={resource} /> : <span className="quality-chip">{resource.chunks?.length ? `${resource.chunks.length} 个内容块` : `${Math.round(resource.coverage * resource.quality * resource.relevance * 100)}% 有效`}</span>}
+          </article>
+        )) : <p className="muted">{mode === "media" ? "还没有录音或视频。" : "尚无资料。Session 仍然有效，你可以稍后补充。"}</p>}
+        {mode === "media" ? <TranscriptPreview resources={visible} /> : null}
       </div>
+      <div className="resource-side-panel">
       <form className="upload-card" action={upload}>
-        <span className="eyebrow">ADD EVIDENCE</span>
-        <h3>上传课堂资料</h3>
-        <input name="file" type="file" required />
+        <span className="eyebrow">{mode === "media" ? "ADD RECORDING" : "ADD EVIDENCE"}</span>
+        <h3>{mode === "media" ? "上传录音或视频" : "上传课堂资料"}</h3>
+        <input accept={mode === "media" ? "audio/*,video/*" : undefined} name="file" type="file" required />
         <div className="form-pair">
-          <label>类型<select name="resource_type" defaultValue="slides"><option value="slides">课件 / PPT</option><option value="audio">录音</option><option value="video">视频</option><option value="textbook">教材</option><option value="note">笔记</option><option value="syllabus">大纲</option><option value="assignment">作业</option></select></label>
-          <label>证据级别<select name="evidence_level" defaultValue="official"><option value="official">课程官方</option><option value="classroom">课堂现场</option><option value="supplementary">补充资料</option></select></label>
+          <label>类型<select name="resource_type" defaultValue={mode === "media" ? "audio" : "slides"}>{mode === "media" ? <><option value="audio">录音</option><option value="video">视频</option></> : <><option value="slides">课件 / PPT</option><option value="textbook">教材</option><option value="note">笔记</option><option value="syllabus">大纲</option><option value="assignment">作业</option></>}</select></label>
+          <label>证据级别<select name="evidence_level" defaultValue={mode === "media" ? "classroom" : "official"}><option value="official">课程官方</option><option value="classroom">课堂现场</option><option value="supplementary">补充资料</option></select></label>
         </div>
-        <div className="form-pair recording-range">
+        {mode === "media" ? <><div className="form-pair recording-range">
           <label>录音起点（秒）<input name="start_offset" inputMode="decimal" min="0" type="number" placeholder="0" /></label>
           <label>录音终点（秒）<input name="end_offset" inputMode="decimal" min="0" type="number" placeholder="3600" /></label>
         </div>
         <label className="recording-range">课堂总时长（秒）<input name="session_duration" inputMode="decimal" min="1" type="number" placeholder="6000" /></label>
-        <small className="field-help">录音或视频请填写真实时间区间；多段资源会按并集计算覆盖率。</small>
+        <p className="upload-preference-note">保存后的转写行为遵循“设置 → 应用偏好”；默认自动转写，关闭后只保存原文件。</p></> : null}
         <input type="hidden" name="coverage" value="1" />
         <input type="hidden" name="quality" value="1" />
         <input type="hidden" name="relevance" value="1" />
         {error ? <p className="form-error">{error}</p> : null}
         <button className="button primary" disabled={busy}>{busy ? "上传中…" : "上传到本地存储"}</button>
       </form>
-      <form className="upload-card" action={addLink}>
+      {mode === "resources" ? <form className="upload-card" action={addLink}>
         <span className="eyebrow">ADD LINK</span>
-        <h3>添加链接资料</h3>
-        <label>
-          名称
-          <input name="name" required maxLength={200} placeholder="例如：课程主页 / 讲义链接" />
-        </label>
-        <label>
-          URL
-          <input name="url" required type="url" maxLength={2000} placeholder="https://example.com/notes" />
-        </label>
-        <div className="form-pair">
-          <label>
-            证据级别
-            <select name="evidence_level" defaultValue="supplementary">
-              <option value="supplementary">补充资料</option>
-              <option value="official">课程官方</option>
-              <option value="classroom">课堂现场</option>
-            </select>
-          </label>
-          <label>
-            备注
-            <input name="notes" maxLength={2000} placeholder="链接内容说明" />
-          </label>
-        </div>
-        <small className="field-help">链接会进入证据权重计算，但外部链接不能冒充老师课堂讲授。</small>
-        {linkError ? <p className="form-error">{linkError}</p> : null}
-        <button className="button primary" disabled={busy}>{busy ? "保存中…" : "保存链接"}</button>
-      </form>
-      <BrowserRecorder sessionId={sessionId} onSaved={() => router.refresh()} />
+        <h3>保存课程链接</h3>
+        <label>名称<input name="name" maxLength={200} placeholder="课程主页或补充阅读" required /></label>
+        <label>链接<input name="url" inputMode="url" placeholder="https://…" type="url" required /></label>
+        <label>说明<input name="notes" maxLength={500} placeholder="为什么与本节课相关（可选）" /></label>
+        <label>证据级别<select name="evidence_level" defaultValue="supplementary"><option value="official">课程官方</option><option value="supplementary">补充资料</option></select></label>
+        <button className="button secondary" disabled={busy}>{busy ? "保存中…" : "保存链接"}</button>
+      </form> : null}
+      </div>
+      {mode === "media" ? <BrowserRecorder sessionId={sessionId} onSaved={() => router.refresh()} /> : null}
     </div>
   );
 }
 
-function BrowserRecorder({ sessionId, onSaved }: { sessionId: string; onSaved: () => void }) {
-  const recorder = useRef<MediaRecorder | null>(null);
-  const chunks = useRef<Blob[]>([]);
-  const startedAt = useRef(0);
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [supported] = useState(
-    () => typeof window !== "undefined" && "MediaRecorder" in window && Boolean(navigator.mediaDevices?.getUserMedia),
-  );
-  const [recording, setRecording] = useState(false);
-  const [seconds, setSeconds] = useState(0);
+function TranscriptionControl({ sessionId, resource }: { sessionId: string; resource: Resource }) {
+  const router = useRouter();
+  const [state, setState] = useState<ResourceAutomation | undefined>(resource.automation);
+  const [job, setJob] = useState<Job | null>(resource.active_transcription_job ?? null);
+  const [manifest, setManifest] = useState<ConsentManifest | null>(null);
+  const [confirmed, setConfirmed] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState("");
-  const [startMinute, setStartMinute] = useState(0);
-  const [sessionMinutes, setSessionMinutes] = useState(100);
+  const status = state?.transcription_state ?? "saved";
+  const running = ["queued", "preparing", "transcribing"].includes(status) || Boolean(job && ["queued", "running"].includes(job.status));
 
   useEffect(() => {
-    return () => {
-      if (timer.current) clearInterval(timer.current);
-      recorder.current?.stream.getTracks().forEach((track) => track.stop());
-    };
-  }, []);
+    if (!running) return;
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
 
-  async function start() {
+    async function poll() {
+      try {
+        const current = await loadTranscription(resource.id);
+        if (disposed) return;
+        setState(current.automation);
+        setJob(current.active_job ?? null);
+        if (terminalTranscriptionStates.includes(current.automation.transcription_state)) {
+          router.refresh();
+          return;
+        }
+        timer = setTimeout(() => void poll(), 1200);
+      } catch (reason) {
+        if (!disposed) setError(reason instanceof Error ? reason.message : "无法读取转写状态");
+      }
+    }
+
+    void poll();
+    return () => {
+      disposed = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [resource.id, router, running]);
+
+  async function prepare() {
     setError("");
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const next = new MediaRecorder(stream);
-      chunks.current = [];
-      next.ondataavailable = (event) => { if (event.data.size) chunks.current.push(event.data); };
-      next.onstop = async () => {
-        const duration = Math.max(1, (Date.now() - startedAt.current) / 1000);
-        const blob = new Blob(chunks.current, { type: next.mimeType || "audio/webm" });
-        const form = new FormData();
-        form.append("file", blob, `browser-${new Date().toISOString().replaceAll(":", "-")}.webm`);
-        form.append("resource_type", "audio");
-        form.append("evidence_level", "classroom");
-        form.append("duration_seconds", String(duration));
-        form.append("start_offset", String(startMinute * 60));
-        form.append("end_offset", String(startMinute * 60 + duration));
-        form.append("session_duration", String(sessionMinutes * 60));
-        form.append("coverage", "1");
-        form.append("quality", "0.9");
-        form.append("relevance", "1");
-        try {
-          const response = await fetch(`${publicApiUrl}/sessions/${sessionId}/resources/upload`, { method: "POST", body: form });
-          if (!response.ok) throw new Error("录音保存失败");
-          onSaved();
-        } catch (reason) {
-          setError(reason instanceof Error ? reason.message : "录音保存失败");
-        } finally {
-          next.stream.getTracks().forEach((track) => track.stop());
-        }
-      };
-      recorder.current = next;
-      startedAt.current = Date.now();
-      setSeconds(0);
-      next.start(5000);
-      timer.current = setInterval(() => setSeconds(Math.floor((Date.now() - startedAt.current) / 1000)), 1000);
-      setRecording(true);
-    } catch {
-      setError("无法访问麦克风，请检查浏览器权限。桌面端更推荐先用系统录音后上传。 ");
+      const response = await fetch(`${publicApiUrl}/sessions/${sessionId}/consent-manifest?operation=transcription&resource_id=${resource.id}`);
+      if (!response.ok) throw new Error("无法读取本次转写的数据清单");
+      const next = (await response.json()) as ConsentManifest;
+      if (next.confirmation_required) setManifest(next);
+      else await start(false);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "无法启动转写"); }
+  }
+
+  async function start(consent: boolean) {
+    setManifest(null);
+    setConfirmed(false);
+    setError("");
+    try {
+      const created = await mutate<Job>(`/resources/${resource.id}/transcription-jobs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm_external_upload: consent }),
+      });
+      setJob(created);
+      setState((current) => current ? { ...current, transcription_state: "queued", last_job_id: created.id } : current);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "转写任务失败"); }
+  }
+
+  async function cancel() {
+    if (!job || cancelling) return;
+    setCancelling(true);
+    setError("");
+    try {
+      const latest = await loadTranscription(resource.id);
+      setState(latest.automation);
+      setJob(latest.active_job ?? null);
+      if (terminalTranscriptionStates.includes(latest.automation.transcription_state) || !latest.active_job) {
+        router.refresh();
+        return;
+      }
+      const result = await mutate<Job>(`/jobs/${latest.active_job.id}/cancel`, { method: "POST" });
+      if (result.status === "cancelled") {
+        setJob(null);
+        setState((current) => current ? { ...current, transcription_state: "cancelled" } : current);
+      } else {
+        const current = await loadTranscription(resource.id);
+        setState(current.automation);
+        setJob(current.active_job ?? null);
+      }
+      router.refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "无法取消转写任务");
+    } finally {
+      setCancelling(false);
     }
   }
 
-  function stop() {
-    if (timer.current) clearInterval(timer.current);
-    recorder.current?.stop();
-    setRecording(false);
-  }
+  return <div className="transcription-control">
+    <span className={`badge transcription-state state-${status}`}><i />{transcriptionLabels[status] ?? status}</span>
+    {running ? <div className="mini-progress wide"><i style={{ width: `${job?.progress ?? 12}%` }} /></div> : null}
+    {status !== "transcribed" && !running ? <button className="text-button" type="button" onClick={prepare}>{["failed", "partial", "cancelled"].includes(status) ? "重试" : "开始转写"}</button> : null}
+    {running ? <button className="text-button danger-text" type="button" disabled={cancelling} onClick={cancel}>{cancelling ? "取消中…" : "取消"}</button> : null}
+    {error ? <small className="resource-error">{error}</small> : null}
+    {manifest ? <div className="modal-backdrop" role="presentation"><section className="consent-modal panel" role="dialog" aria-modal="true" aria-labelledby="transcription-consent-title"><span className="eyebrow">ONE-TIME EXTERNAL CONSENT</span><h2 id="transcription-consent-title">确认本次外部转写</h2>{manifest.providers?.map((provider) => <div className="provider-route" key={provider.name}><span>实际路由</span><strong>{provider.name}</strong><small>{provider.vendor} · {provider.model || "未设置模型"}</small></div>)}<div className="consent-columns"><div><strong>将发送</strong><ul>{manifest.will_send.map((item) => <li key={item}>{item}</li>)}</ul></div><div><strong>不会发送</strong><ul>{manifest.will_not_send.map((item) => <li key={item}>{item}</li>)}</ul></div></div><div className="consent-resources"><strong>具体资源</strong>{manifest.resources.map((item) => <span key={item.id}>{item.name} · {item.type}</span>)}</div><label className="consent-check"><input checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} type="checkbox" />我理解该媒体会发送给上方实际 Provider，并且只同意这一次。</label><div className="modal-actions"><button className="button secondary" type="button" onClick={() => setManifest(null)}>取消并保留为未转写</button><button className="button primary" type="button" disabled={!confirmed} onClick={() => start(true)}>仅同意本次</button></div></section></div> : null}
+  </div>;
+}
 
-  return (
-    <section className="recorder-card">
-      <span className="eyebrow">BROWSER RECORDER · EXPERIMENTAL</span>
-      <h3>{recording ? `正在录音 ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}` : "浏览器现场录音"}</h3>
-      <p>切换应用、锁屏或系统回收浏览器标签页都可能中断录音。重要课堂请优先使用系统录音并在课后上传。</p>
-      {!recording ? <div className="form-pair recorder-fields"><label>当前课堂分钟<input type="number" min="0" value={startMinute} onChange={(event) => setStartMinute(Number(event.target.value))} /></label><label>课堂总分钟<input type="number" min="1" value={sessionMinutes} onChange={(event) => setSessionMinutes(Number(event.target.value))} /></label></div> : null}
-      {error ? <p className="form-error">{error}</p> : null}
-      <button className={recording ? "button danger" : "button secondary"} disabled={!supported || (!recording && sessionMinutes <= startMinute)} onClick={recording ? stop : start} type="button">
-        {recording ? "停止并保存" : supported ? "开始录音" : "当前浏览器不支持"}
-      </button>
-    </section>
-  );
+function TranscriptPreview({ resources }: { resources: Resource[] }) {
+  const segments = resources.flatMap((resource) => resource.transcript_segments ?? []);
+  if (!segments.length) return null;
+  return <div className="transcript-preview"><div className="section-heading"><div><span className="eyebrow">TRANSCRIPT</span><h3>转写片段</h3></div><span className="count-chip">{segments.length}</span></div>{segments.slice(0, 12).map((segment) => <div className="transcript-line" key={segment.id}><time>{Math.floor(segment.global_start / 60)}:{String(Math.floor(segment.global_start % 60)).padStart(2, "0")}</time><p>{segment.text}</p></div>)}</div>;
 }

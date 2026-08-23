@@ -53,7 +53,7 @@ class KnowledgeService:
         session = self.db.get_session(session_id)
         points = session["knowledge_points"]
         if not points:
-            raise ValueError("Analyze the session before generating an assessment")
+            raise ValueError("请先完成课堂分析，再生成掌握度验收。")
         query = " ".join(point["title"] for point in points)
         chunks = await self.retriever.retrieve(session_id, query, RetrievalPolicy.LEARNING)
         evidence = self.retriever.attach_to_resources(session["resources"], chunks)
@@ -63,7 +63,7 @@ class KnowledgeService:
             for title in question.knowledge_point_titles:
                 expected = allowed_points.get(title)
                 if expected is None or question.expected_mastery_level > expected:
-                    raise ProviderOutputError("Provider returned an out-of-scope assessment question")
+                    raise ProviderOutputError("Provider 返回了超出本节课知识范围的验收题，结果已拒绝保存。")
         self._validate_sources([q.model_dump(mode="json") for q in questions], evidence)
         return self.db.replace_questions(session_id, [q.model_dump(mode="json") for q in questions])
 
@@ -143,7 +143,7 @@ class KnowledgeService:
         payloads: list[dict] = []
         for follow_up in follow_ups[:2]:
             if not all(title in allowed for title in follow_up.knowledge_point_titles):
-                raise ProviderOutputError("Provider returned an out-of-scope follow-up question")
+                raise ProviderOutputError("Provider 返回了超出知识点范围的追问题，结果已拒绝保存。")
             payload = follow_up.model_dump(mode="json")
             payload["question_type"] = "follow_up"
             payloads.append(payload)
@@ -180,7 +180,7 @@ class KnowledgeService:
                 result = await self.make_quiz(job["session_id"])
                 summary = {"question_count": len(result)}
             else:
-                raise ValueError(f"unsupported job kind: {job['kind']}")
+                raise ValueError(f"不支持的任务类型：{job['kind']}")
             return self.db.update_job(
                 job_id,
                 status=JobStatus.SUCCEEDED.value,
@@ -239,12 +239,12 @@ class KnowledgeService:
         def validate_reference(value: dict) -> None:
             resource = allowed.get(value.get("resource_id"))
             if resource is None:
-                raise ProviderOutputError("Provider returned a source reference that was not supplied")
+                raise ProviderOutputError("Provider 引用了未提供的资料，结果已拒绝保存。")
             locator_type = value.get("locator_type")
             if locator_type == "transcript":
                 start, end = value.get("start_time"), value.get("end_time")
                 if start is None or end is None:
-                    raise ProviderOutputError("Transcript source reference is missing its time range")
+                    raise ProviderOutputError("Provider 返回的转写引用缺少时间范围。")
                 matches = [
                     segment
                     for segment in resource.get("transcript_segments", [])
@@ -252,19 +252,19 @@ class KnowledgeService:
                     and abs(float(segment["global_end"]) - float(end)) < 1e-3
                 ]
                 if not matches:
-                    raise ProviderOutputError("Provider returned a transcript time range that does not exist")
+                    raise ProviderOutputError("Provider 返回了不存在的转写时间范围。")
             elif locator_type == "page":
                 pages = {int(item) for item in re.findall(r"\[PDF page (\d+)\]", resource.get("extracted_text", ""))}
                 if value.get("page") not in pages:
-                    raise ProviderOutputError("Provider returned a PDF page that does not exist")
+                    raise ProviderOutputError("Provider 引用了不存在的 PDF 页码。")
             elif locator_type == "slide":
                 slides = {int(item) for item in re.findall(r"\[PPT slide (\d+)\]", resource.get("extracted_text", ""))}
                 if value.get("slide") not in slides:
-                    raise ProviderOutputError("Provider returned a slide that does not exist")
+                    raise ProviderOutputError("Provider 引用了不存在的课件页。")
             elif locator_type == "chunk":
                 chunk_ids = {item["id"] for item in resource.get("chunks", [])}
                 if value.get("chunk_id") not in chunk_ids:
-                    raise ProviderOutputError("Provider returned a document chunk that does not exist")
+                    raise ProviderOutputError("Provider 引用了不存在的文档分片。")
 
         def visit(value: object) -> None:
             if isinstance(value, dict):
@@ -285,7 +285,7 @@ class KnowledgeService:
             if start is None and end is None:
                 continue
             if start is None or end is None or end <= start:
-                raise ProviderOutputError("Timeline item has an invalid time range")
+                raise ProviderOutputError("课堂时间线包含无效的时间范围。")
             transcript_refs = [
                 source
                 for source in item.get("sources", [])
@@ -296,4 +296,4 @@ class KnowledgeService:
                 and abs(float(source["end_time"]) - float(end)) < 1e-3
                 for source in transcript_refs
             ):
-                raise ProviderOutputError("Timeline timestamps must match a cited transcript segment")
+                raise ProviderOutputError("课堂时间线的时间戳必须对应真实引用的转写分段。")

@@ -60,20 +60,42 @@ export interface Resource {
   session_duration?: number | null;
   capture_range?: number[];
   chunks?: ResourceChunk[];
-  transcript_segments?: Array<{
-    id: string;
-    resource_id: string;
-    start_time: number;
-    end_time: number;
-    global_start?: number | null;
-    global_end?: number | null;
-    text: string;
-  }>;
   extracted_text?: string | null;
   coverage: number;
   quality: number;
   relevance: number;
   upload_state: string;
+  transcript_segments?: TranscriptSegment[];
+  automation?: ResourceAutomation;
+  active_transcription_job?: Job | null;
+}
+
+export interface TranscriptSegment {
+  id: string;
+  start_time: number;
+  end_time: number;
+  global_start: number;
+  global_end: number;
+  text: string;
+}
+
+export interface ResourceAutomation {
+  resource_id: string;
+  transcription_state:
+    | "saving"
+    | "saved"
+    | "preparing"
+    | "awaiting_consent"
+    | "awaiting_configuration"
+    | "queued"
+    | "transcribing"
+    | "partial"
+    | "transcribed"
+    | "failed"
+    | "cancelled";
+  auto_transcribe: boolean;
+  failure_reason?: string | null;
+  last_job_id?: string | null;
 }
 
 export interface ChunkDetail extends ResourceChunk {
@@ -90,6 +112,36 @@ export interface ChunkDetail extends ResourceChunk {
     mime_type?: string | null;
   };
   preview_url?: string | null;
+}
+
+export interface RecordingSnapshot {
+  id: string;
+  session_id: string;
+  status: "recording" | "finalizing" | "failed" | "completed" | "abandoned";
+  mime_type: string;
+  filename: string;
+  start_offset: number;
+  session_duration?: number | null;
+  duration_seconds?: number | null;
+  last_sequence?: number | null;
+  auto_transcribe: boolean;
+  resource_id?: string | null;
+  failure_reason?: string | null;
+  created_at: string;
+  updated_at: string;
+  received_sequences: number[];
+  next_sequence: number;
+  next_stream_index: number;
+  missing_sequences: number[];
+  chunks: Array<{
+    sequence: number;
+    checksum: string;
+    byte_size: number;
+    mime_type: string;
+    stream_id: string;
+    stream_index: number;
+    received_at: string;
+  }>;
 }
 
 export interface KnowledgePoint {
@@ -162,6 +214,8 @@ export interface AssessmentQuestion {
 
 export interface Job {
   id: string;
+  session_id?: string | null;
+  resource_id?: string | null;
   kind: string;
   status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
   stage: string;
@@ -174,6 +228,13 @@ export interface ConsentManifest {
   operation: string;
   provider: string;
   external: boolean;
+  providers?: Array<{
+    id?: string | null;
+    name: string;
+    vendor?: string;
+    model?: string;
+    external: boolean;
+  }>;
   resources: Array<{ id: string; name: string; type: string }>;
   will_send: string[];
   will_not_send: string[];
@@ -187,49 +248,297 @@ export interface SessionDetail extends SessionSummary {
   debts: Debt[];
   learning_steps: LearningStep[];
   reconstruction?: Reconstruction | null;
-}
-
-export interface ProviderPreset {
-  id: string;
-  label: string;
-  base_url: string;
-  default_model: string;
-  api_style: string;
-  key_required: boolean;
-  description: string;
-}
-
-export interface ModelProviderState {
-  ai_provider: string;
-  ai_label?: string;
-  api_style?: string;
-  base_url?: string;
-  asr_provider: string;
-  ai_model: string;
-  asr_model: string;
-  embedding_provider: string;
-  embedding_model: string;
-  storage_provider: string;
-  local_mode: boolean;
-  configured: boolean;
-  asr_configured: boolean;
-  local_asr_model?: string | null;
-  masked_api_key?: string | null;
-  access_token_configured: boolean;
-  external_upload_requires_confirmation: boolean;
-}
-
-export interface ProviderOptions {
-  presets: ProviderPreset[];
-  current: ModelProviderState;
+  automation?: {
+    occurrence_id?: string | null;
+    materialization_reason?: string | null;
+    title_locked: boolean;
+    title_source: string;
+    title_confidence: number;
+  };
 }
 
 export interface HomePayload {
+  generated_at: string;
+  timezone: string;
   sessions: SessionSummary[];
   open_debt_count: number;
   urgent_debt_count: number;
   pending_session_count: number;
   minimum_minutes: number;
+  today_occurrences: ScheduleOccurrence[];
+  pending_automation: Array<{
+    kind: string;
+    session_id: string;
+    resource_id: string;
+    state: string;
+    name: string;
+  }>;
+  pending_review_count: number;
+  jobs: Job[];
+  active_recordings: Array<{
+    id: string;
+    session_id: string;
+    status: "recording" | "finalizing" | "failed";
+    filename: string;
+    failure_reason?: string | null;
+    chunk_count?: number;
+    updated_at: string;
+    session_title: string;
+    course_name: string;
+  }>;
+  schedule_connection?: ScheduleConnection | null;
+  onboarding: {
+    schedule_ready: boolean;
+    transcription_configured: boolean;
+    transcription_tested: boolean;
+    session_created: boolean;
+    recording_started: boolean;
+  };
+}
+
+export interface AcademicTerm {
+  id: string;
+  name: string;
+  starts_on: string;
+  ends_on: string;
+  timezone: string;
+  current: boolean;
+}
+
+export interface ScheduleRule {
+  id: string;
+  course_name: string;
+  course_code?: string | null;
+  teacher?: string | null;
+  campus?: string | null;
+  building?: string | null;
+  room?: string | null;
+  weekday: number;
+  start_period: number;
+  end_period: number;
+  weeks: number[];
+  odd_even: "all" | "odd" | "even";
+}
+
+export interface ScheduleOccurrence {
+  id: string;
+  occurrence_date: string;
+  starts_at: string;
+  ends_at: string;
+  status: "scheduled" | "cancelled";
+  sync_status?: "active" | "removed" | "superseded";
+  source_kind: "regular" | "adjustment" | "makeup";
+  room?: string | null;
+  building?: string | null;
+  teacher?: string | null;
+  session_id?: string | null;
+  rule: ScheduleRule;
+}
+
+export interface ScheduleConnection {
+  id: string;
+  connector: string;
+  display_name: string;
+  state: string;
+  sync_interval_minutes: number;
+  last_synced_at?: string | null;
+  last_error?: string | null;
+  reauth_required: boolean;
+  capability: { live_login: boolean; fixture_import: boolean; reason: string };
+  base_url: string;
+}
+
+export interface ReviewItem {
+  id: string;
+  kind: "archive_match" | "session_topic" | "schedule_conflict" | "transcription_failure";
+  status: string;
+  subject_type: string;
+  subject_id: string;
+  title: string;
+  proposed_value?: string | null;
+  confidence: number;
+  reasons: string[];
+  navigation_path?: string | null;
+  created_at: string;
+  snoozed_until?: string | null;
+}
+
+export interface ApplicationSettings {
+  timezone: string;
+  auto_transcribe: boolean;
+  recording_chunk_retention_days: 7 | 14 | 30 | null;
+}
+
+export interface StorageMaintenanceSnapshot {
+  generated_at?: string | null;
+  cached: boolean;
+  needs_refresh: boolean;
+  retention_days: 7 | 14 | 30 | null;
+  categories: Array<{
+    key: string;
+    label: string;
+    bytes: number;
+    files: number;
+    truncated: boolean;
+  }>;
+  cleanup: {
+    eligible_recordings: number;
+    eligible_bytes: number;
+    protected_recordings?: number;
+    reasons?: Record<string, number>;
+  };
+}
+
+export interface StorageCleanupPreview {
+  preview_id: string;
+  expires_at: string;
+  recording_count: number;
+  bytes: number;
+  retention_days: 7 | 14 | 30 | null;
+}
+
+export interface StorageCleanupResult {
+  cleaned_recordings: number;
+  reclaimed_bytes: number;
+  already_clean: number;
+  failures: Array<{ recording_id: string; code: string; reason: string; reclaimed_bytes: number; recoverable: boolean }>;
+  replayed: boolean;
+}
+
+export interface ScheduleSyncChange {
+  external_id: string;
+  course_name: string;
+  occurrence_date: string;
+  starts_at: string;
+  ends_at: string;
+  changes?: Record<string, { before: unknown; after: unknown }>;
+  reason?: string;
+  session_id?: string;
+}
+
+export interface ScheduleSyncBatch {
+  id: string;
+  connector: string;
+  source: string;
+  academic_term: string;
+  term_id?: string | null;
+  snapshot_hash: string;
+  status: "pending" | "applied" | "failed";
+  diff: {
+    added: ScheduleSyncChange[];
+    modified: ScheduleSyncChange[];
+    removed: ScheduleSyncChange[];
+    conflicts: ScheduleSyncChange[];
+    legacy_adoption?: { occurrence_ids: string[]; rule_ids: string[] };
+    summary: { added: number; modified: number; removed: number; conflicts: number };
+  };
+  error?: string | null;
+  created_at: string;
+  applied_at?: string | null;
+}
+
+export interface InboxItem {
+  id: string;
+  name: string;
+  type: string;
+  captured_at: string;
+  matching_status: string;
+  match_confidence: number;
+  match_reasons: string[];
+  suggested_session_id?: string | null;
+  adopted_resource_id?: string | null;
+  archived: boolean;
+}
+
+export interface ProviderProfile {
+  id: string;
+  name: string;
+  vendor: string;
+  adapter: string;
+  base_url: string;
+  region?: string | null;
+  default_model: string;
+  capabilities: string[];
+  custom_headers: Record<string, string>;
+  external: boolean;
+  enabled: boolean;
+  implementation_status: string;
+  credential_reference?: string | null;
+  credential_configured: boolean;
+  last_test_status?: string | null;
+  last_test_message?: string | null;
+  last_tested_at?: string | null;
+}
+
+export interface LocalASRStatus {
+  adapter: string;
+  binary: string;
+  binary_ready: boolean;
+  binary_resolved?: string | null;
+  model: string;
+  model_dir?: string | null;
+  model_ready: boolean;
+  model_resolved?: string | null;
+  model_bytes?: number | null;
+  language: string;
+  threads: number;
+  timeout_seconds: number;
+  ffmpeg_ready: boolean;
+  ready: boolean;
+  profile_id?: string | null;
+  active: boolean;
+}
+
+export interface LocalModel {
+  id: string;
+  name: string;
+  file_name: string;
+  sha256: string;
+  download_bytes: number;
+  disk_bytes: number;
+  speed: string;
+  accuracy: string;
+  languages: string[];
+  use_case: string;
+  recommended: boolean;
+  status: "not_downloaded" | "queued" | "downloading" | "cancelling" | "paused" | "cancelled" | "completed" | "failed" | "corrupted" | "missing";
+  installed: boolean;
+  corrupted: boolean;
+  selected: boolean;
+  bytes_downloaded: number;
+  progress: number;
+  can_resume: boolean;
+  error?: string | null;
+  model_directory: string;
+}
+
+export interface ProviderSettings {
+  storage_provider: string;
+  profiles: ProviderProfile[];
+  defaults: Record<string, ProviderProfile>;
+  secret_encryption_configured: boolean;
+  local_asr?: LocalASRStatus | null;
+  local_models: LocalModel[];
+}
+
+export interface ProviderUsage {
+  month: string;
+  request_count: number;
+  transcription_minutes: number;
+  known_cost: number;
+  unknown_cost_count: number;
+  failure_count: number;
+  items: Array<{
+    id: string;
+    operation: string;
+    provider_name: string;
+    model?: string | null;
+    status: string;
+    audio_minutes?: number | null;
+    estimated_cost?: number | null;
+    cost_known: boolean;
+    created_at: string;
+  }>;
 }
 
 export type ApiResult<T> =

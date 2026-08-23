@@ -14,6 +14,7 @@ interface PreviewState {
   resourceId: string;
   resourceName: string;
   resourceType: string;
+  externalUrl?: string | null;
 }
 
 async function readJson<T>(url: string): Promise<T> {
@@ -68,6 +69,8 @@ export function SourcePreviewButton({ source }: { source: SourceRef }) {
       if (source.locator_type === "transcript") {
         const segment = findSegment(resource, source);
         text = segment?.text ?? "没有找到对应的转写片段。";
+      } else if (resource.external_url) {
+        text = resource.extracted_text?.trim() || "这是外部链接资料；打开链接后请自行核对内容与来源。";
       } else {
         chunk = findChunk(resource, source);
         if (source.chunk_id) {
@@ -91,6 +94,7 @@ export function SourcePreviewButton({ source }: { source: SourceRef }) {
         resourceId: resource.id,
         resourceName: resource.name || source.label,
         resourceType: resource.type,
+        externalUrl: resource.external_url,
       });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "读取来源失败");
@@ -121,7 +125,7 @@ export function SourcePreviewButton({ source }: { source: SourceRef }) {
             ) : null}
             <pre className="source-text">{preview.text}</pre>
             <div className="modal-actions">
-              <a className="button secondary" href={`${publicApiUrl}/resources/${preview.resourceId}/raw`} target="_blank" rel="noreferrer">打开原始文件</a>
+              <a className="button secondary" href={preview.externalUrl || `${publicApiUrl}/resources/${preview.resourceId}/raw`} target="_blank" rel="noreferrer">{preview.externalUrl ? "打开外部链接" : "打开原始文件"}</a>
               <button className="button primary" type="button" onClick={() => setPreview(null)}>关闭</button>
             </div>
           </section>

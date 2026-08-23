@@ -150,23 +150,13 @@ def test_web_landing_endpoints_for_resources_and_links(tmp_path: Path):
     assert updated.status_code == 200
 
 
-def test_auto_provider_resolution_follows_api_key(monkeypatch):
-    monkeypatch.setenv("KNOWLEDGEDEBT_AI_PROVIDER", "auto")
-    monkeypatch.setenv("KNOWLEDGEDEBT_ASR_PROVIDER", "auto")
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+def test_zero_config_registry_prefers_local_ai_without_changing_asr_consent(tmp_path: Path):
+    client = make_client(tmp_path)
+    provider = client.get("/settings/provider").json()
 
-    from app.config import Settings
-
-    local = Settings.from_env()
-    assert local.ai_provider == "local_rule"
-    assert local.asr_provider == "local_whisper"
-
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    remote = Settings.from_env()
-    assert remote.ai_provider == "openai_compatible"
-    # 语音转写默认仍走本地 Whisper；云端 ASR 需要显式开启。
-    assert remote.asr_provider == "local_whisper"
-
-    monkeypatch.setenv("KNOWLEDGEDEBT_LOCAL_ASR", "0")
-    cloud_asr = Settings.from_env()
-    assert cloud_asr.asr_provider == "openai_compatible"
+    assert provider["defaults"]["ai"]["adapter"] == "local_rule"
+    assert provider["local_mode"] is True
+    assert provider["configured"] is True
+    # 没有本地模型时，录音仍等待配置；AI 的本地回退不会伪造成语音识别能力。
+    assert provider["defaults"]["asr"]["adapter"] == "openai_compatible"
+    assert provider["external_upload_requires_confirmation"] is False

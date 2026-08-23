@@ -1,3 +1,4 @@
-# 本地中文/英文语音转写（faster-whisper）。
-# ./start.sh 和 Docker 后端默认安装；纯 API 部署可通过 KNOWLEDGEDEBT_LOCAL_ASR=0 跳过。
+# 实验性本地中文/英文语音转写（faster-whisper）。
+# 正式默认路径是应用内统一管理的 whisper.cpp；该依赖不会被一键启动脚本自动安装。
+# 仅在明确评估模型下载、缓存和授权边界后手动安装。
 faster-whisper>=1.2,<2

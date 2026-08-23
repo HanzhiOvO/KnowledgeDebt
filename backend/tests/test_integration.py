@@ -228,6 +228,16 @@ def test_analysis_job_persists_progress_and_result(tmp_path: Path):
     assert completed["progress"] == 100
     assert completed["result"]["knowledge_point_count"] == 1
 
+    repeated_cancel = client.post(f"/jobs/{queued['id']}/cancel")
+    assert repeated_cancel.status_code == 200
+    assert repeated_cancel.json()["status"] == "succeeded"
+
+    active = client.app.state.db.create_job("indexing", session_id=session["id"])
+    cancelled = client.post(f"/jobs/{active['id']}/cancel")
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    assert client.post(f"/jobs/{active['id']}/cancel").json()["status"] == "cancelled"
+
 
 def test_external_embeddings_are_deferred_until_consented_indexing_job(tmp_path: Path):
     class ExternalEmbeddingProvider:

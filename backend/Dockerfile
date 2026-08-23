@@ -6,8 +6,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 COPY backend/requirements.txt backend/requirements-local-asr.txt backend/requirements-postgres.txt /app/backend/
-ARG WITH_LOCAL_ASR=1
-RUN pip install --upgrade pip     && pip install -r /app/backend/requirements.txt     && pip install -r /app/backend/requirements-postgres.txt     && if [ "$WITH_LOCAL_ASR" = "1" ]; then pip install -r /app/backend/requirements-local-asr.txt; fi
+ARG WITH_EXPERIMENTAL_FASTER_WHISPER=0
+RUN pip install --upgrade pip \
+    && pip install -r /app/backend/requirements.txt \
+    && pip install -r /app/backend/requirements-postgres.txt \
+    && if [ "$WITH_EXPERIMENTAL_FASTER_WHISPER" = "1" ]; then pip install -r /app/backend/requirements-local-asr.txt; fi
 
 COPY backend /app/backend
 WORKDIR /app/backend

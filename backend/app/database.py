@@ -10,6 +10,7 @@ from typing import Any
 
 from sqlalchemy import Connection, Engine, create_engine, text
 
+from .automation_schema import AUTOMATION_SCHEMA
 from .models import DEFAULT_PROFILE, CourseCreate, SessionCreate, utc_now
 
 SCHEMA = """
@@ -135,7 +136,20 @@ def _decode(row: sqlite3.Row | Mapping[str, Any] | None) -> dict[str, Any] | Non
         if key.endswith("_json"):
             raw = result.pop(key)
             result[key.removesuffix("_json")] = json.loads(raw) if raw is not None else None
-    for key in ("completed", "active", "blocks_next_session"):
+    for key in (
+        "completed",
+        "active",
+        "blocks_next_session",
+        "external",
+        "enabled",
+        "current",
+        "reauth_required",
+        "title_locked",
+        "auto_transcribe",
+        "locked",
+        "archived",
+        "cost_known",
+    ):
         if key in result:
             result[key] = bool(result[key])
     return result
@@ -209,7 +223,7 @@ class Database:
             self.path = Path(path)
             self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
-            conn.executescript(SCHEMA)
+            conn.executescript(SCHEMA + AUTOMATION_SCHEMA)
             if not self.uses_sqlalchemy:
                 self._migrate_legacy_schema(conn)
 
@@ -267,17 +281,140 @@ class Database:
                     (json.dumps(DEFAULT_PROFILE), utc_now(), row["id"]),
                 )
 
+        automation_columns = {
+            "schedule_rules": {
+                "source": "ALTER TABLE schedule_rules ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'",
+                "last_seen_batch_id": "ALTER TABLE schedule_rules ADD COLUMN last_seen_batch_id TEXT",
+                "sync_status": "ALTER TABLE schedule_rules ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'active'",
+            },
+            "schedule_occurrences": {
+                "adjustment_external_id": (
+                    "ALTER TABLE schedule_occurrences ADD COLUMN adjustment_external_id TEXT"
+                ),
+                "source": "ALTER TABLE schedule_occurrences ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'",
+                "last_seen_batch_id": "ALTER TABLE schedule_occurrences ADD COLUMN last_seen_batch_id TEXT",
+                "sync_status": "ALTER TABLE schedule_occurrences ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'active'",
+            },
+            "review_items": {
+                "snoozed_until": "ALTER TABLE review_items ADD COLUMN snoozed_until TEXT",
+            },
+            "recording_chunks": {
+                "stream_id": (
+                    "ALTER TABLE recording_chunks ADD COLUMN stream_id "
+                    "TEXT NOT NULL DEFAULT 'legacy'"
+                ),
+                "stream_index": (
+                    "ALTER TABLE recording_chunks ADD COLUMN stream_index "
+                    "INTEGER NOT NULL DEFAULT 0"
+                ),
+            },
+            "provider_profiles": {
+                "custom_headers_json": (
+                    "ALTER TABLE provider_profiles ADD COLUMN custom_headers_json "
+                    "TEXT NOT NULL DEFAULT '{}'"
+                ),
+            },
+            "app_settings": {
+                "recording_chunk_retention_days": (
+                    "ALTER TABLE app_settings ADD COLUMN "
+                    "recording_chunk_retention_days INTEGER DEFAULT 14"
+                ),
+            },
+            "recordings": {
+                "raw_chunks_verified_at": (
+                    "ALTER TABLE recordings ADD COLUMN raw_chunks_verified_at TEXT"
+                ),
+                "raw_chunks_purged_at": (
+                    "ALTER TABLE recordings ADD COLUMN raw_chunks_purged_at TEXT"
+                ),
+                "raw_chunks_purged_bytes": (
+                    "ALTER TABLE recordings ADD COLUMN raw_chunks_purged_bytes BIGINT"
+                ),
+            },
+        }
+        for table, migrations in automation_columns.items():
+            table_exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone()
+            if not table_exists:
+                continue
+            columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+            for column, statement in migrations.items():
+                if column not in columns:
+                    conn.execute(statement)
+        conn.execute(
+            """WITH ranked AS (
+                 SELECT id, ROW_NUMBER() OVER (
+                   PARTITION BY rule_id, external_id
+                   ORDER BY CASE WHEN EXISTS (
+                     SELECT 1 FROM session_automation sa
+                     WHERE sa.occurrence_id=schedule_occurrences.id
+                   ) THEN 0 ELSE 1 END, created_at
+                 ) AS duplicate_rank
+                 FROM schedule_occurrences
+               )
+               UPDATE schedule_occurrences
+               SET external_id=external_id || ':legacy:' || substr(id, 1, 8),
+                   sync_status='superseded'
+               WHERE id IN (SELECT id FROM ranked WHERE duplicate_rank>1)"""
+        )
+        conn.execute(
+            """WITH ranked AS (
+                 SELECT id, ROW_NUMBER() OVER (
+                   PARTITION BY storage_provider, storage_key ORDER BY created_at
+                 ) AS duplicate_rank
+                 FROM inbox_items
+               )
+               UPDATE inbox_items
+               SET storage_key=storage_key || ':legacy:' || substr(id, 1, 8),
+                   matching_status='rejected', archived=1
+               WHERE id IN (SELECT id FROM ranked WHERE duplicate_rank>1)"""
+        )
+        conn.execute(
+            """WITH ranked AS (
+                 SELECT id, ROW_NUMBER() OVER (
+                   PARTITION BY kind, subject_type, subject_id ORDER BY created_at
+                 ) AS duplicate_rank
+                 FROM review_items WHERE status IN ('pending', 'later')
+               )
+               UPDATE review_items SET status='rejected',
+                 decision_reason='数据库升级时合并重复待审核项', decided_at=updated_at
+               WHERE id IN (SELECT id FROM ranked WHERE duplicate_rank>1)"""
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_occurrence_external_identity "
+            "ON schedule_occurrences(rule_id, external_id)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_storage_identity "
+            "ON inbox_items(storage_provider, storage_key)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_one_open_review_per_subject "
+            "ON review_items(kind, subject_type, subject_id) WHERE status IN ('pending', 'later')"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_recording_chunks_stream "
+            "ON recording_chunks(recording_id, stream_index, sequence)"
+        )
+
     @contextmanager
-    def connect(self) -> Iterator[Any]:
+    def connect(self, *, immediate: bool = False) -> Iterator[Any]:
         if self.engine:
             with self.engine.begin() as connection:
                 yield _AlchemyConnection(connection)
             return
-        conn = sqlite3.connect(self.path)
+        conn = sqlite3.connect(self.path, timeout=30)
         conn.row_factory = sqlite3.Row
         try:
+            conn.execute("PRAGMA foreign_keys = ON")
+            if immediate:
+                conn.execute("BEGIN IMMEDIATE")
             yield conn
             conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -320,7 +457,7 @@ class Database:
         merged.update(profile)
         total = sum(merged.get(channel, 0.0) for channel in DEFAULT_PROFILE)
         if abs(total - 100.0) > 1e-6:
-            raise ValueError("evidence channel weights must total 100")
+            raise ValueError("证据通道权重合计必须为 100。")
         with self.connect() as conn:
             conn.execute(
                 "UPDATE courses SET profile_json=?, updated_at=? WHERE id=?",
@@ -929,6 +1066,17 @@ class Database:
                     utc_now(),
                     job_id,
                 ),
+            )
+        return self.get_job(job_id)
+
+    def cancel_job(self, job_id: str) -> dict[str, Any]:
+        """Cancel an active job without overwriting a job that already finished."""
+        self.get_job(job_id)
+        with self.connect() as conn:
+            conn.execute(
+                """UPDATE jobs SET status='cancelled', stage='cancelled', updated_at=?
+                   WHERE id=? AND status IN ('queued', 'running')""",
+                (utc_now(), job_id),
             )
         return self.get_job(job_id)
 

@@ -2,12 +2,17 @@ import "server-only";
 
 import type {
   ApiResult,
+  ApplicationSettings,
   AssessmentQuestion,
   Course,
   Debt,
   HomePayload,
-  ModelProviderState,
-  ProviderOptions,
+  InboxItem,
+  ProviderSettings,
+  ProviderUsage,
+  ReviewItem,
+  ScheduleConnection,
+  ScheduleOccurrence,
   SessionDetail,
 } from "@/types/domain";
 
@@ -58,9 +63,29 @@ export function getDebts() {
 }
 
 export function getProviderSettings() {
-  return request<ModelProviderState>("/settings/provider");
+  return request<ProviderSettings>("/settings/provider");
 }
 
-export function getProviderOptions() {
-  return request<ProviderOptions>("/settings/providers");
+export function getApplicationSettings() {
+  return request<ApplicationSettings>("/settings/application");
+}
+
+export function getProviderUsage() {
+  return request<ProviderUsage>("/settings/provider-usage");
+}
+
+export function getSchedule() {
+  return request<ScheduleOccurrence[]>("/schedule/occurrences");
+}
+
+export function getScheduleConnection() {
+  return request<ScheduleConnection>("/schedule/connection");
+}
+
+export function getReviews() {
+  return request<ReviewItem[]>("/reviews");
+}
+
+export function getInbox() {
+  return request<InboxItem[]>("/inbox");
 }

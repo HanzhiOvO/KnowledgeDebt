@@ -3,8 +3,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+from .provider_headers import validate_custom_headers
 
 
 def utc_now() -> str:
@@ -64,6 +67,52 @@ class JobStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class TranscriptionState(StrEnum):
+    SAVING = "saving"
+    SAVED = "saved"
+    PREPARING = "preparing"
+    AWAITING_CONSENT = "awaiting_consent"
+    AWAITING_CONFIGURATION = "awaiting_configuration"
+    QUEUED = "queued"
+    TRANSCRIBING = "transcribing"
+    PARTIAL = "partial"
+    TRANSCRIBED = "transcribed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class ProviderCapability(StrEnum):
+    STRUCTURED_GENERATION = "structured_generation"
+    CHAT_ANALYSIS = "chat_analysis"
+    EMBEDDINGS = "embeddings"
+    AUDIO_TRANSCRIPTION = "audio_transcription"
+    ASYNC_AUDIO_TRANSCRIPTION = "async_audio_transcription"
+    SEGMENT_TIMESTAMPS = "segment_timestamps"
+    SPEAKER_DIARIZATION = "speaker_diarization"
+    LONG_AUDIO = "long_audio"
+    HOTWORDS = "hotwords"
+
+
+class ProviderGroup(StrEnum):
+    AI = "ai"
+    ASR = "asr"
+    EMBEDDING = "embedding"
+
+
+class ReviewKind(StrEnum):
+    ARCHIVE_MATCH = "archive_match"
+    SESSION_TOPIC = "session_topic"
+    SCHEDULE_CONFLICT = "schedule_conflict"
+    TRANSCRIPTION_FAILURE = "transcription_failure"
+
+
+class ReviewStatus(StrEnum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    LATER = "later"
+
+
 DEFAULT_PROFILE = {
     "classroom": 40.0,
     "official_session": 35.0,
@@ -92,9 +141,9 @@ class CourseCreate(BaseModel):
     @classmethod
     def validate_profile(cls, value: dict[str, float]) -> dict[str, float]:
         if set(value) != set(DEFAULT_PROFILE):
-            raise ValueError(f"profile must contain exactly these evidence channels: {', '.join(DEFAULT_PROFILE)}")
+            raise ValueError(f"证据配置必须完整包含这些通道：{', '.join(DEFAULT_PROFILE)}")
         if any(weight < 0 or weight > 100 for weight in value.values()) or abs(sum(value.values()) - 100) > 1e-6:
-            raise ValueError("evidence channel weights must be between 0 and 100 and total 100")
+            raise ValueError("证据通道权重必须在 0 到 100 之间，且合计为 100。")
         return value
 
 
@@ -105,6 +154,170 @@ class SessionCreate(BaseModel):
     notes: str = ""
 
 
+class ProviderProfileCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    vendor: str = Field(min_length=1, max_length=80)
+    adapter: str = Field(default="openai_compatible", min_length=1, max_length=80)
+    base_url: str = Field(default="", max_length=1000)
+    region: str | None = Field(default=None, max_length=120)
+    credential: str | None = Field(default=None, min_length=1, max_length=10000)
+    credential_reference: str | None = Field(default=None, max_length=240)
+    default_model: str = Field(default="", max_length=240)
+    capabilities: list[ProviderCapability] = Field(default_factory=list)
+    custom_headers: dict[str, str] = Field(default_factory=dict)
+    external: bool = True
+    enabled: bool = True
+
+    @field_validator("custom_headers")
+    @classmethod
+    def validate_headers(cls, value: dict[str, str]) -> dict[str, str]:
+        return validate_custom_headers(value)
+
+    @model_validator(mode="after")
+    def validate_credential_source(self) -> ProviderProfileCreate:
+        if self.credential and self.credential_reference:
+            raise ValueError("直接输入密钥和环境变量引用不能同时填写。")
+        return self
+
+
+class ProviderProfileUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    base_url: str | None = Field(default=None, max_length=1000)
+    region: str | None = Field(default=None, max_length=120)
+    credential: str | None = Field(default=None, min_length=1, max_length=10000)
+    credential_reference: str | None = Field(default=None, max_length=240)
+    default_model: str | None = Field(default=None, max_length=240)
+    capabilities: list[ProviderCapability] | None = None
+    custom_headers: dict[str, str] | None = None
+    external: bool | None = None
+    enabled: bool | None = None
+
+    @field_validator("custom_headers")
+    @classmethod
+    def validate_headers(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        return validate_custom_headers(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def validate_credential_source(self) -> ProviderProfileUpdate:
+        if self.credential and self.credential_reference:
+            raise ValueError("直接输入密钥和环境变量引用不能同时填写。")
+        return self
+
+
+class ProviderDefaultUpdate(BaseModel):
+    profile_id: str
+
+
+class LocalModelDownloadRequest(BaseModel):
+    confirmed: bool = False
+
+
+class LocalModelDeleteRequest(BaseModel):
+    confirmed: bool = False
+
+
+class AcademicTermCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    starts_on: str
+    ends_on: str
+    timezone: str = "Asia/Shanghai"
+    current: bool = True
+
+
+class ScheduleConnectionUpdate(BaseModel):
+    connector: str = "zjsu_undergraduate_v9"
+    display_name: str = "浙江工商大学本科教务系统"
+    sync_interval_minutes: int = Field(default=360, ge=30, le=10080)
+
+
+class ScheduleRuleCreate(BaseModel):
+    term_id: str
+    course_name: str = Field(min_length=1, max_length=160)
+    course_code: str | None = Field(default=None, max_length=80)
+    class_name: str | None = Field(default=None, max_length=160)
+    teacher: str | None = Field(default=None, max_length=160)
+    campus: str | None = Field(default=None, max_length=160)
+    building: str | None = Field(default=None, max_length=160)
+    room: str | None = Field(default=None, max_length=160)
+    weekday: int = Field(ge=1, le=7)
+    start_period: int = Field(ge=1, le=30)
+    end_period: int = Field(ge=1, le=30)
+    weeks: list[int] = Field(min_length=1)
+    odd_even: str = "all"
+    notes: str = ""
+    external_id: str = Field(min_length=1, max_length=240)
+    aliases: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_periods_and_weeks(self) -> ScheduleRuleCreate:
+        if self.end_period < self.start_period:
+            raise ValueError("结束节次不能早于开始节次。")
+        if any(week < 1 or week > 60 for week in self.weeks):
+            raise ValueError("周次必须在 1 到 60 之间。")
+        if self.odd_even not in {"all", "odd", "even"}:
+            raise ValueError("单双周规则只支持 all、odd 或 even。")
+        return self
+
+
+class OccurrenceMaterializeRequest(BaseModel):
+    reason: str = Field(default="opened", pattern="^(occurred|evidence|opened)$")
+
+
+class InboxDecision(BaseModel):
+    session_id: str | None = None
+    reason: str = "user_review"
+
+
+class ReviewDecision(BaseModel):
+    action: str = Field(pattern="^(accept|edit_accept|reject|later|pending)$")
+    edited_value: str | None = Field(default=None, max_length=500)
+    reason: str = Field(default="", max_length=1000)
+    snoozed_until: str | None = None
+
+
+class AppSettingsUpdate(BaseModel):
+    timezone: str | None = Field(default=None, min_length=1, max_length=120)
+    auto_transcribe: bool | None = None
+    recording_chunk_retention_days: int | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("时区必须是有效的 IANA 时区，例如 Asia/Shanghai。") from exc
+        return value
+
+    @field_validator("recording_chunk_retention_days")
+    @classmethod
+    def validate_recording_retention(cls, value: int | None) -> int | None:
+        if value is not None and value not in {7, 14, 30}:
+            raise ValueError("录音分片保留时间只支持 7、14、30 天或永久保留。")
+        return value
+
+
+class RecordingCreate(BaseModel):
+    recording_id: str = Field(min_length=8, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
+    mime_type: str = Field(min_length=1, max_length=160)
+    filename: str = Field(min_length=1, max_length=240)
+    start_offset: float = Field(default=0, ge=0)
+    session_duration: float | None = Field(default=None, gt=0)
+    auto_transcribe: bool | None = None
+
+
+class RecordingFinalize(BaseModel):
+    last_sequence: int = Field(ge=0, le=100_000)
+    duration_seconds: float = Field(gt=0)
+
+
+class SessionTitleUpdate(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    locked: bool = True
+
+
 class CourseProfileUpdate(BaseModel):
     profile: dict[str, float]
 
@@ -112,9 +325,9 @@ class CourseProfileUpdate(BaseModel):
     @classmethod
     def validate_profile(cls, value: dict[str, float]) -> dict[str, float]:
         if not value or any(key not in DEFAULT_PROFILE for key in value):
-            raise ValueError(f"profile keys must be evidence channels: {', '.join(DEFAULT_PROFILE)}")
+            raise ValueError(f"证据配置只能使用这些通道：{', '.join(DEFAULT_PROFILE)}")
         if any(weight < 0 or weight > 100 for weight in value.values()):
-            raise ValueError("profile weights must be between 0 and 100")
+            raise ValueError("证据通道权重必须在 0 到 100 之间。")
         return value
 
 
@@ -133,13 +346,13 @@ class SourceRef(BaseModel):
     def validate_locator_shape(self) -> SourceRef:
         if self.locator_type == LocatorType.TRANSCRIPT:
             if self.start_time is None or self.end_time is None or self.end_time <= self.start_time:
-                raise ValueError("transcript locators require an increasing start_time and end_time")
+                raise ValueError("转写引用必须包含递增的开始和结束时间。")
         elif self.locator_type == LocatorType.PAGE and self.page is None:
-            raise ValueError("page locators require page")
+            raise ValueError("PDF 引用必须包含页码。")
         elif self.locator_type == LocatorType.SLIDE and self.slide is None:
-            raise ValueError("slide locators require slide")
+            raise ValueError("课件引用必须包含页序号。")
         elif self.locator_type == LocatorType.CHUNK and not self.chunk_id:
-            raise ValueError("chunk locators require chunk_id")
+            raise ValueError("文档引用必须包含 chunk_id。")
         return self
 
 
@@ -155,9 +368,9 @@ class TranscriptSegment(BaseModel):
     @model_validator(mode="after")
     def validate_times(self) -> TranscriptSegment:
         if self.end_time < self.start_time:
-            raise ValueError("transcript end_time must be after start_time")
+            raise ValueError("转写结束时间必须晚于开始时间。")
         if self.global_start is not None and self.global_end is not None and self.global_end < self.global_start:
-            raise ValueError("transcript global_end must be after global_start")
+            raise ValueError("转写全局结束时间必须晚于全局开始时间。")
         return self
 
 

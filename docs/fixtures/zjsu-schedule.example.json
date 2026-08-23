@@ -1,0 +1,57 @@
+{
+  "schema": "knowledgedebt.zjsu.schedule.fixture.v1",
+  "term": {
+    "name": "2026-2027 学年第一学期",
+    "starts_on": "2026-09-07",
+    "ends_on": "2027-01-10",
+    "timezone": "Asia/Shanghai"
+  },
+  "period_times": {
+    "1": ["08:05", "08:50"],
+    "2": ["08:55", "09:40"],
+    "3": ["09:55", "10:40"],
+    "4": ["10:45", "11:30"]
+  },
+  "courses": [
+    {
+      "external_id": "example-compiler-monday",
+      "course_code": "EXAMPLE-001",
+      "course_name": "编译原理（示例）",
+      "class_name": "示例教学班",
+      "teacher": "示例教师",
+      "campus": "示例校区",
+      "building": "示例教学楼",
+      "room": "A101",
+      "weekday": 1,
+      "start_period": 1,
+      "end_period": 2,
+      "weeks": "1-16周(双)",
+      "odd_even": "even",
+      "aliases": ["编译", "Compiler"],
+      "notes": "本文件不含真实学生或教师数据。"
+    }
+  ],
+  "adjustments": [
+    {
+      "external_id": "example-compiler-cancel-2026-10-12",
+      "rule_external_id": "example-compiler-monday",
+      "date": "2026-10-12",
+      "status": "cancelled",
+      "source_kind": "adjustment",
+      "start_period": 1,
+      "end_period": 2,
+      "notes": "示例停课"
+    },
+    {
+      "external_id": "example-compiler-makeup-2026-10-17",
+      "rule_external_id": "example-compiler-monday",
+      "date": "2026-10-17",
+      "status": "scheduled",
+      "source_kind": "makeup",
+      "start_period": 3,
+      "end_period": 4,
+      "room": "B202",
+      "notes": "示例补课"
+    }
+  ]
+}

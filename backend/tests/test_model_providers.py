@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import sys
 import types
 from pathlib import Path
 
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
 from app.config import Settings
@@ -22,72 +22,85 @@ def make_client(tmp_path: Path) -> TestClient:
         base_url="",
         ai_model="local",
         asr_model="test",
+        encryption_key=Fernet.generate_key().decode("ascii"),
     )
     return TestClient(create_app(settings))
 
 
-def test_one_key_deepseek_configuration_persists_without_leaking_key(tmp_path: Path, monkeypatch):
+def test_one_key_deepseek_configuration_persists_without_leaking_key(tmp_path: Path):
     client = make_client(tmp_path)
 
-    options = client.get("/settings/providers").json()
-    preset_ids = {preset["id"] for preset in options["presets"]}
-    assert {"local_rule", "openai_compatible", "deepseek", "anthropic", "opencode"} <= preset_ids
+    catalog = client.get("/settings/providers/catalog").json()
+    vendors = {item["vendor"] for item in catalog}
+    assert {"local_rule", "openai", "deepseek", "anthropic", "opencode"} <= vendors
 
     response = client.post(
-        "/settings/model-provider",
+        "/settings/providers",
         json={
-            "provider": "deepseek",
-            "api_key": "sk-abcdef1234567890",
-            "model": "deepseek-chat",
+            "name": "我的 DeepSeek",
+            "vendor": "deepseek",
+            "adapter": "openai_compatible",
+            "base_url": "https://api.deepseek.com/",
+            "credential": "sk-abcdef1234567890",
+            "default_model": "deepseek-chat",
+            "capabilities": ["structured_generation", "chat_analysis"],
+            "external": True,
         },
     )
-    assert response.status_code == 200, response.text
-    current = response.json()["current"]
-    assert current["ai_provider"] == "deepseek"
-    assert current["configured"] is True
-    assert current["masked_api_key"] == "sk-****7890"
+    assert response.status_code == 201, response.text
+    profile = response.json()
+    assert profile["vendor"] == "deepseek"
+    assert profile["base_url"] == "https://api.deepseek.com"
+    assert profile["credential_configured"] is True
     assert "sk-abcdef1234567890" not in response.text
 
-    persisted = json.loads((tmp_path / "runtime-provider.json").read_text(encoding="utf-8"))
-    assert persisted["ai_provider"] == "deepseek"
-    assert persisted["api_key"] == "sk-abcdef1234567890"
-    assert persisted["base_url"] == "https://api.deepseek.com"
+    stored, secret = client.app.state.provider_registry.resolve_profile_secret(profile["id"])
+    assert stored["credential_ciphertext"] != "sk-abcdef1234567890"
+    assert secret == "sk-abcdef1234567890"
+    assert not (tmp_path / "runtime-provider.json").exists()
 
-    monkeypatch.setenv("KNOWLEDGEDEBT_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("KNOWLEDGEDEBT_AI_PROVIDER", "auto")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-env-openai")
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-    monkeypatch.setenv("KNOWLEDGEDEBT_AI_MODEL", "gpt-5-mini")
-    reloaded = Settings.from_env()
-    assert reloaded.ai_provider == "deepseek"
-    assert reloaded.api_key == "sk-abcdef1234567890"
-    assert reloaded.base_url == "https://api.deepseek.com"
-    assert reloaded.ai_model == "deepseek-chat"
-
-    local = client.post("/settings/model-provider/local")
-    assert local.status_code == 200
-    assert local.json()["current"]["local_mode"] is True
-    assert local.json()["current"]["masked_api_key"] is None
+    routed = client.put("/settings/providers/defaults/ai", json={"profile_id": profile["id"]})
+    assert routed.status_code == 200
+    assert client.get("/settings/provider").json()["defaults"]["ai"]["id"] == profile["id"]
 
 
-def test_anthropic_and_opencode_presets_are_accepted(tmp_path: Path):
+def test_unverified_anthropic_stays_disabled_and_opencode_uses_secure_profile(tmp_path: Path):
     client = make_client(tmp_path)
 
     anthropic = client.post(
-        "/settings/model-provider",
-        json={"provider": "authoripic", "api_key": "sk-ant-test", "model": "claude-sonnet-4-5"},
+        "/settings/providers",
+        json={
+            "name": "Anthropic",
+            "vendor": "anthropic",
+            "adapter": "anthropic_native",
+            "base_url": "https://api.anthropic.com",
+            "credential_reference": "env:ANTHROPIC_API_KEY",
+            "default_model": "claude-sonnet-4-5",
+            "capabilities": ["structured_generation", "chat_analysis"],
+            "external": True,
+            "enabled": True,
+        },
     )
-    assert anthropic.status_code == 200
-    assert anthropic.json()["current"]["ai_provider"] == "anthropic"
-    assert anthropic.json()["current"]["ai_label"] == "Anthropic / Claude"
+    assert anthropic.status_code == 422
+    assert "接口槽位" in anthropic.json()["detail"]
 
     opencode = client.post(
-        "/settings/model-provider",
-        json={"provider": "opencode", "api_key": "oc-test-key", "model": "gpt-5.5"},
+        "/settings/providers",
+        json={
+            "name": "OpenCode Zen",
+            "vendor": "opencode",
+            "adapter": "openai_compatible",
+            "base_url": "https://opencode.ai/zen/v1",
+            "credential_reference": "env:OPENCODE_API_KEY",
+            "default_model": "gpt-5.5",
+            "capabilities": ["structured_generation", "chat_analysis"],
+            "external": True,
+        },
     )
-    assert opencode.status_code == 200
-    assert opencode.json()["current"]["ai_provider"] == "opencode"
-    assert opencode.json()["current"]["base_url"] == "https://opencode.ai/zen/v1"
+    assert opencode.status_code == 201
+    assert opencode.json()["vendor"] == "opencode"
+    assert opencode.json()["credential_reference"] == "env:OPENCODE_API_KEY"
+    assert "oc-test-key" not in opencode.text
 
 
 def test_local_whisper_provider_uses_faster_whisper(tmp_path: Path, monkeypatch):

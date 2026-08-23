@@ -50,7 +50,7 @@ def test_source_validation_rejects_invented_timestamps():
     }
     KnowledgeService._validate_sources(valid, evidence)
 
-    with pytest.raises(ProviderOutputError, match="does not exist"):
+    with pytest.raises(ProviderOutputError, match="不存在"):
         KnowledgeService._validate_sources({**valid, "start_time": 121}, evidence)
 
 
@@ -83,7 +83,7 @@ def test_timeline_must_match_a_real_transcript_reference():
     KnowledgeService._validate_timeline(payload, evidence)
 
     payload["timeline"][0]["start_time"] = 21
-    with pytest.raises(ProviderOutputError, match="must match"):
+    with pytest.raises(ProviderOutputError, match="必须对应"):
         KnowledgeService._validate_timeline(payload, evidence)
 
 
