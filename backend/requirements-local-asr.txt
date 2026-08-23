@@ -1,0 +1,3 @@
+# 本地中文/英文语音转写（faster-whisper）。
+# ./start.sh 和 Docker 后端默认安装；纯 API 部署可通过 KNOWLEDGEDEBT_LOCAL_ASR=0 跳过。
+faster-whisper>=1.2,<2

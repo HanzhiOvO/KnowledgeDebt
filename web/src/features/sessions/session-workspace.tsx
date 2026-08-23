@@ -4,11 +4,13 @@ import { useState } from "react";
 
 import { ProgressRing } from "@/components/progress-ring";
 import { mutate } from "@/lib/client-api";
-import type { AssessmentQuestion, SessionDetail, SourceRef } from "@/types/domain";
+import type { AssessmentQuestion, SessionDetail } from "@/types/domain";
 import { useRouter } from "next/navigation";
 import { AssessmentPanel } from "./assessment-panel";
 import { JobAction } from "./job-action";
+import { RemediationButton } from "./remediation-button";
 import { ResourcePanel } from "./resource-panel";
+import { SourceList } from "./source-preview";
 
 const tabs = ["概览", "录音与转写", "资料", "课堂还原", "学习", "验收"] as const;
 type Tab = (typeof tabs)[number];
@@ -57,7 +59,11 @@ function Overview({ session }: { session: SessionDetail }) {
         {session.debts.slice(0, 5).map((debt) => (
           <article className="debt-row" key={debt.id}>
             <span className={`priority priority-${debt.priority}`}>P{debt.priority}</span>
-            <span><strong>{debt.title}</strong><small>掌握 {debt.current_mastery.toFixed(1)} / {debt.target_mastery}</small></span>
+            <span>
+              <strong>{debt.title}</strong>
+              <small>掌握 {debt.current_mastery.toFixed(1)} / {debt.target_mastery}</small>
+              {debt.status !== "mastered" ? <RemediationButton sessionId={session.id} pointId={debt.knowledge_point_id} title={debt.title} compact /> : null}
+            </span>
             <span className={`debt-state ${debt.status}`}>{debt.status}</span>
           </article>
         ))}
@@ -108,10 +114,6 @@ function LearningPath({ session }: { session: SessionDetail }) {
       ))}
     </div>
   );
-}
-
-function SourceList({ sources }: { sources: SourceRef[] }) {
-  return <div className="source-list">{sources.map((source, index) => <span key={`${source.resource_id}-${index}`}>{source.label}{source.locator ? ` · ${source.locator}` : ""}</span>)}</div>;
 }
 
 function EmptyPane({ title, detail }: { title: string; detail: string }) {

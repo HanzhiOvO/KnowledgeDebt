@@ -6,14 +6,20 @@ import { useState } from "react";
 import { mutate, publicApiUrl } from "@/lib/client-api";
 import type { ConsentManifest, Job } from "@/types/domain";
 
+export type JobActionKind = "analysis" | "assessment" | "transcription" | "indexing";
+
 export function JobAction({
   sessionId,
   kind,
+  resourceId,
   label,
+  compact = false,
 }: {
   sessionId: string;
-  kind: "analysis" | "assessment";
+  kind: JobActionKind;
+  resourceId?: string;
   label: string;
+  compact?: boolean;
 }) {
   const router = useRouter();
   const [manifest, setManifest] = useState<ConsentManifest | null>(null);
@@ -24,7 +30,10 @@ export function JobAction({
   async function prepare() {
     setError("");
     try {
-      const response = await fetch(`${publicApiUrl}/sessions/${sessionId}/consent-manifest?operation=${kind}`);
+      const resourceQuery = resourceId ? `&resource_id=${encodeURIComponent(resourceId)}` : "";
+      const response = await fetch(
+        `${publicApiUrl}/sessions/${sessionId}/consent-manifest?operation=${kind}${resourceQuery}`,
+      );
       if (!response.ok) throw new Error("无法读取隐私清单");
       const next = (await response.json()) as ConsentManifest;
       if (next.confirmation_required) setManifest(next);
@@ -41,12 +50,23 @@ export function JobAction({
       const created = await mutate<Job>(`/sessions/${sessionId}/jobs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind, confirm_external_upload: consent }),
+        body: JSON.stringify({ kind, resource_id: resourceId ?? null, confirm_external_upload: consent }),
       });
       setJob(created);
       await poll(created.id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "任务启动失败");
+    }
+  }
+
+  async function cancel() {
+    if (!job) return;
+    setError("");
+    try {
+      const cancelled = await mutate<Job>(`/jobs/${job.id}/cancel`, { method: "POST" });
+      setJob(cancelled);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "取消任务失败");
     }
   }
 
@@ -67,11 +87,12 @@ export function JobAction({
 
   const running = job && ["queued", "running"].includes(job.status);
   return (
-    <div className="job-action">
-      <button className="button primary" disabled={Boolean(running)} onClick={prepare}>
+    <div className={compact ? "job-action compact" : "job-action"}>
+      <button className={compact ? "button secondary" : "button primary"} disabled={Boolean(running)} onClick={prepare}>
         {running ? `${job.stage} · ${job.progress}%` : label}
       </button>
       {job ? <div className="job-progress" aria-label={`任务进度 ${job.progress}%`}><span style={{ width: `${job.progress}%` }} /></div> : null}
+      {running ? <button className="text-button" type="button" onClick={cancel}>取消任务</button> : null}
       {job?.status === "failed" ? <p className="form-error">{job.error || "任务失败"}</p> : null}
       {error ? <p className="form-error">{error}</p> : null}
       {manifest ? (

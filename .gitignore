@@ -13,10 +13,19 @@ data/
 
 # Python 缓存与虚拟环境
 __pycache__/
+*.ses
 *.py[cod]
 .venv/
+.venv-bootstrap/
+.get-pip.py
 .pytest_cache/
 .ruff_cache/
+
+# npm 本地缓存
+.npm-cache/
+
+# 一键启动日志
+start-*.log
 
 # Legacy Flutter / Dart 构建产物
 .dart_tool/

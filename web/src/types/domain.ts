@@ -28,11 +28,23 @@ export interface SourceRef {
   resource_id: string;
   label: string;
   locator?: string | null;
+  locator_type?: "transcript" | "page" | "slide" | "chunk" | "url" | string | null;
   start_time?: number | null;
   end_time?: number | null;
   page?: number | null;
   slide?: number | null;
   chunk_id?: string | null;
+}
+
+export interface ResourceChunk {
+  id: string;
+  locator_type: string;
+  page?: number | null;
+  slide?: number | null;
+  content_kind: string;
+  text?: string;
+  visual_path?: string | null;
+  metadata?: Record<string, unknown>;
 }
 
 export interface Resource {
@@ -47,13 +59,17 @@ export interface Resource {
   end_offset?: number | null;
   session_duration?: number | null;
   capture_range?: number[];
-  chunks?: Array<{
+  chunks?: ResourceChunk[];
+  transcript_segments?: Array<{
     id: string;
-    locator_type: string;
-    page?: number | null;
-    slide?: number | null;
-    content_kind: string;
+    resource_id: string;
+    start_time: number;
+    end_time: number;
+    global_start?: number | null;
+    global_end?: number | null;
+    text: string;
   }>;
+  extracted_text?: string | null;
   coverage: number;
   quality: number;
   relevance: number;
@@ -88,6 +104,22 @@ export interface ResourceAutomation {
   auto_transcribe: boolean;
   failure_reason?: string | null;
   last_job_id?: string | null;
+}
+
+export interface ChunkDetail extends ResourceChunk {
+  resource_id: string;
+  resource_name?: string | null;
+  resource_type?: string | null;
+  resource_evidence_level?: string | null;
+  resource_mime_type?: string | null;
+  resource?: {
+    id: string;
+    name?: string | null;
+    type?: string | null;
+    evidence_level?: string | null;
+    mime_type?: string | null;
+  };
+  preview_url?: string | null;
 }
 
 export interface KnowledgePoint {
@@ -199,6 +231,41 @@ export interface SessionDetail extends SessionSummary {
     title_source: string;
     title_confidence: number;
   };
+}
+
+export interface ProviderPreset {
+  id: string;
+  label: string;
+  base_url: string;
+  default_model: string;
+  api_style: string;
+  key_required: boolean;
+  description: string;
+}
+
+export interface ModelProviderState {
+  ai_provider: string;
+  ai_label?: string;
+  api_style?: string;
+  base_url?: string;
+  asr_provider: string;
+  ai_model: string;
+  asr_model: string;
+  embedding_provider: string;
+  embedding_model: string;
+  storage_provider: string;
+  local_mode: boolean;
+  configured: boolean;
+  asr_configured: boolean;
+  local_asr_model?: string | null;
+  masked_api_key?: string | null;
+  access_token_configured: boolean;
+  external_upload_requires_confirmation: boolean;
+}
+
+export interface ProviderOptions {
+  presets: ProviderPreset[];
+  current: ModelProviderState;
 }
 
 export interface HomePayload {

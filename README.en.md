@@ -1,8 +1,8 @@
-# KnowledgeDebt
+# 知债 (KnowledgeDebt)
 
 > Classroom attendance may fail. Learning continuity should not.
 
-KnowledgeDebt is an open-source, Web-first system for recovering lectures a student missed or did not master. It reconstructs a real **Course Session** from evidence, creates a source-grounded learning path, measures knowledge debt, and clears that debt only after sufficient mastery evidence.
+**知债 (KnowledgeDebt)** is an open-source, Web-first system for recovering lectures a student missed or did not master. It reconstructs a real **Course Session** from evidence, creates a source-grounded learning path, measures knowledge debt, and clears that debt only after sufficient mastery evidence.
 
 [中文（默认）](README.md) · [Deployment](docs/deployment.md) · [Privacy](docs/privacy.md) · [Architecture](docs/architecture/0001-web-first-thin-backend.md)
 
@@ -20,6 +20,8 @@ A Session exists independently of recordings. Supplementary sources may teach bu
 
 ## Implemented
 
+- **one-key model provider setup**: Web settings presets for OpenAI, DeepSeek, Anthropic (Claude), and OpenCode Zen; paste the official API key and apply without a restart;
+- **local speech recognition**: local faster-whisper with automatic Chinese/English detection; audio never leaves the server, CPU-friendly, downloads the `small` model on first use;
 - responsive Next.js 16 / React 19 primary Web client;
 - FastAPI API with optional single-user bearer-token protection and same-origin Web proxy;
 - four bounded evidence channels and recording-union timeline coverage;
@@ -42,6 +44,9 @@ make backend-install
 make web-install
 cp .env.example .env
 make dev
+```
+
+One-click launchers are also available: `./start.sh` on Linux/macOS, and `start.bat` (or `start.ps1`) on Windows 10/11.
 ```
 
 Open `http://localhost:3000`. SQLite and local file storage work without separate services. Configure an OpenAI-compatible provider in `.env` for hosted analysis and transcription. Local deterministic hash embeddings are the privacy-preserving default.

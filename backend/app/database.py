@@ -473,6 +473,19 @@ class Database:
             ).fetchall()
         return [_decode(row) for row in rows]  # type: ignore[misc]
 
+    def get_document_chunk(self, chunk_id: str) -> dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """SELECT c.*, r.type AS resource_type, r.name AS resource_name,
+                          r.evidence_level AS resource_evidence_level, r.mime_type AS resource_mime_type
+                   FROM document_chunks c JOIN resources r ON r.id = c.resource_id
+                   WHERE c.id = ?""",
+                (chunk_id,),
+            ).fetchone()
+        if not row:
+            raise KeyError("document_chunk")
+        return _decode(row)  # type: ignore[return-value]
+
     def list_session_chunks(self, session_id: str) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
