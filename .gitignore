@@ -24,6 +24,9 @@ __pycache__/
 # npm 本地缓存
 .npm-cache/
 
+# 一键启动日志
+start-*.log
+
 # Legacy Flutter / Dart 构建产物
 .dart_tool/
 .flutter-plugins

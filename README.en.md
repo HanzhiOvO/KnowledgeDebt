@@ -46,6 +46,9 @@ cp .env.example .env
 make dev
 ```
 
+One-click launchers are also available: `./start.sh` on Linux/macOS, and `start.bat` (or `start.ps1`) on Windows 10/11.
+```
+
 Open `http://localhost:3000`. SQLite and local file storage work without separate services. Configure an OpenAI-compatible provider in `.env` for hosted analysis and transcription. Local deterministic hash embeddings are the privacy-preserving default.
 
 ## Test

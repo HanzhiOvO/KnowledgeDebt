@@ -77,6 +77,18 @@ cd KnowledgeDebt
 
 不希望自动打开浏览器时使用 `./start.sh --no-browser`；依赖已经准备好时可使用 `./start.sh --skip-install`。
 
+### Windows 一键启动
+
+Windows 10/11 双击仓库根目录的 **`start.bat`** 即可，也可以通过 PowerShell 运行：
+
+```powershell
+.\start.ps1                 # 自动安装依赖并启动
+.\start.ps1 -NoBrowser     # 不自动打开浏览器
+.\start.ps1 -SkipInstall   # 依赖已准备好时跳过安装
+```
+
+脚本会检查 Python 3.12+、Node.js 24+ 与 npm，自动创建 `.venv`、安装后端（含本地 faster-whisper）和 Web 依赖、生成 `.env`，然后启动 FastAPI 与 Next.js。服务就绪后自动打开 `http://localhost:3000`；在控制台按 `Ctrl+C` 会同时停止两个服务，日志写入 `start-api.log` / `start-web.log`。
+
 ### 手动启动
 
 ```bash
