@@ -27,3 +27,5 @@ make backend-test
 开发默认使用 SQLite；生产部署支持 PostgreSQL 16。数据库变更必须同时提供 Alembic migration 和升级测试。
 
 `make backend-install` 默认同时安装本地语音转写依赖 `requirements-local-asr.txt`；设 `KNOWLEDGEDEBT_LOCAL_ASR=0` 可跳过。
+
+本地 SQLite 开发不安装 PostgreSQL 二进制驱动；需要连接 PostgreSQL 时执行 `pip install -r requirements-postgres.txt`。Docker 与 CI 会自动安装该可选依赖。

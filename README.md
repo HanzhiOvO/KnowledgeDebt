@@ -102,6 +102,14 @@ make dev
 
 打开 `http://localhost:3000`；API 位于 `http://127.0.0.1:8123`。不配置 `KNOWLEDGEDEBT_DATABASE_URL` 时自动使用 SQLite，不需要单独安装数据库服务。
 
+本地开发默认不安装 PostgreSQL 二进制驱动（避免 Windows 上无对应 wheel 导致安装失败）。如本地要连 PostgreSQL，额外执行：
+
+```bash
+.venv/bin/pip install -r backend/requirements-postgres.txt
+```
+
+Docker Compose 镜像会自动安装该驱动。
+
 更推荐直接打开 Web「设置」页：选择 OpenAI / DeepSeek / Anthropic / OpenCode Zen 预设，粘贴官方 API Key 即可，配置会以 `0600` 权限保存在服务端数据目录并即时生效。也可以继续使用 `.env`：
 
 ```dotenv

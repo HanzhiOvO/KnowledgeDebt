@@ -1,0 +1,2 @@
+# PostgreSQL binary driver for deployments. Local SQLite development does not need it.
+psycopg[binary]>=3.2,<4

@@ -54,6 +54,12 @@ Development defaults to SQLite. Production uses:
 KNOWLEDGEDEBT_DATABASE_URL=postgresql://user:password@database:5432/knowledgedebt
 ```
 
+For a local PostgreSQL target, install the optional binary driver first:
+
+```bash
+.venv/bin/pip install -r backend/requirements-postgres.txt
+```
+
 Run migrations before each application rollout:
 
 ```bash
