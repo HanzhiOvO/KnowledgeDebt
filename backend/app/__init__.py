@@ -1,3 +1,3 @@
-"""KnowledgeDebt API package."""
+"""知债 KnowledgeDebt API package."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

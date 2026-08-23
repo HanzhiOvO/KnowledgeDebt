@@ -1,6 +1,6 @@
 # 项目文档
 
-该目录保存 KnowledgeDebt 的架构、部署、隐私、迁移与验证资料。
+该目录保存 知债（KnowledgeDebt）的架构、部署、隐私、迁移与验证资料。
 
 - [`architecture/0001-web-first-thin-backend.md`](architecture/0001-web-first-thin-backend.md)：Web-first 与薄后端架构决策；
 - [`deployment.md`](deployment.md)：本地开发、Docker Compose、PostgreSQL、S3 与备份；

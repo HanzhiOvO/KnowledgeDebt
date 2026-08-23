@@ -9,7 +9,7 @@ export function HomeDashboard({ home }: { home: HomePayload }) {
     <>
       <header className="page-header">
         <div>
-          <span className="eyebrow">TODAY · KNOWLEDGE DEBT</span>
+          <span className="eyebrow">知债 · TODAY</span>
           <h1>先处理最影响后续学习的缺口</h1>
           <p>课堂资料只是证据；真正的完成标准是通过验收。</p>
         </div>

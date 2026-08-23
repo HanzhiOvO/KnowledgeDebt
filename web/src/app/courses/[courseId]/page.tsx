@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { Metadata } from "next";
 
 import { EmptyState } from "@/components/empty-state";
+import { CourseProfileForm } from "@/features/courses/course-profile-form";
 import { SessionForm } from "@/features/courses/session-form";
 import { getCourse } from "@/lib/api";
 
@@ -34,6 +35,7 @@ export default async function CoursePage(props: PageProps<"/courses/[courseId]">
           )) : <p className="muted">创建 Session 后，无论是否有资料，它都会保留为一节合法课堂。</p>}
         </div>
       </section>
+      <CourseProfileForm course={course} />
     </main>
   );
 }

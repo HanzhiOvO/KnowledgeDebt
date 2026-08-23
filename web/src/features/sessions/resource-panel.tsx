@@ -3,13 +3,39 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
-import { publicApiUrl } from "@/lib/client-api";
+import { mutate, publicApiUrl } from "@/lib/client-api";
 import type { Resource } from "@/types/domain";
+
+import { JobAction } from "./job-action";
 
 export function ResourcePanel({ sessionId, resources }: { sessionId: string; resources: Resource[] }) {
   const router = useRouter();
   const [error, setError] = useState("");
+  const [linkError, setLinkError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  async function addLink(formData: FormData) {
+    setBusy(true);
+    setLinkError("");
+    try {
+      await mutate<Resource>(`/sessions/${sessionId}/resources/link`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: formData.get("name"),
+          url: formData.get("url"),
+          evidence_level: formData.get("evidence_level"),
+          resource_type: "link",
+          notes: formData.get("notes"),
+        }),
+      });
+      router.refresh();
+    } catch (reason) {
+      setLinkError(reason instanceof Error ? reason.message : "链接保存失败");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function upload(formData: FormData) {
     for (const key of ["start_offset", "end_offset", "session_duration"]) {
@@ -35,13 +61,29 @@ export function ResourcePanel({ sessionId, resources }: { sessionId: string; res
   return (
     <div className="resource-layout">
       <div className="resource-list">
-        {resources.length ? resources.map((resource) => (
-          <article className="resource-row" key={resource.id}>
-            <span className="file-icon">{resource.type.slice(0, 3).toUpperCase()}</span>
-            <span className="resource-main"><strong>{resource.name}</strong><small>{resource.evidence_level} · {resource.upload_state}</small></span>
-            <span className="quality-chip">{resource.chunks?.length ? `${resource.chunks.length} chunks` : `${Math.round(resource.coverage * resource.quality * resource.relevance * 100)}% 有效`}</span>
-          </article>
-        )) : <p className="muted">尚无资料。Session 仍然有效，你可以从备注或后续补充开始。</p>}
+        {resources.length ? resources.map((resource) => {
+          const canTranscribe = ["audio", "video"].includes(resource.type) && !resource.external_url;
+          const canIndex = !["audio", "video", "link"].includes(resource.type) && Boolean(resource.chunks?.length);
+          const rawHref = resource.external_url ?? `${publicApiUrl}/resources/${resource.id}/raw`;
+          const transcriptCount = resource.transcript_segments?.length ?? 0;
+          return (
+            <article className="resource-row" key={resource.id}>
+              <span className="file-icon">{resource.type.slice(0, 3).toUpperCase()}</span>
+              <span className="resource-main">
+                <strong>{resource.name}</strong>
+                <small>{resource.evidence_level} · {resource.upload_state}{transcriptCount ? ` · ${transcriptCount} 转写段` : ""}</small>
+                <span className="resource-actions">
+                  <a className="text-button" href={rawHref} target="_blank" rel="noreferrer">
+                    {resource.external_url ? "打开链接 ↗" : "原始文件"}
+                  </a>
+                  {canTranscribe ? <JobAction sessionId={sessionId} kind="transcription" resourceId={resource.id} label="语音转写" compact /> : null}
+                  {canIndex ? <JobAction sessionId={sessionId} kind="indexing" resourceId={resource.id} label="重建索引" compact /> : null}
+                </span>
+              </span>
+              <span className="quality-chip">{resource.chunks?.length ? `${resource.chunks.length} chunks` : `${Math.round(resource.coverage * resource.quality * resource.relevance * 100)}% 有效`}</span>
+            </article>
+          );
+        }) : <p className="muted">尚无资料。Session 仍然有效，你可以从备注或后续补充开始。</p>}
       </div>
       <form className="upload-card" action={upload}>
         <span className="eyebrow">ADD EVIDENCE</span>
@@ -62,6 +104,35 @@ export function ResourcePanel({ sessionId, resources }: { sessionId: string; res
         <input type="hidden" name="relevance" value="1" />
         {error ? <p className="form-error">{error}</p> : null}
         <button className="button primary" disabled={busy}>{busy ? "上传中…" : "上传到本地存储"}</button>
+      </form>
+      <form className="upload-card" action={addLink}>
+        <span className="eyebrow">ADD LINK</span>
+        <h3>添加链接资料</h3>
+        <label>
+          名称
+          <input name="name" required maxLength={200} placeholder="例如：课程主页 / 讲义链接" />
+        </label>
+        <label>
+          URL
+          <input name="url" required type="url" maxLength={2000} placeholder="https://example.com/notes" />
+        </label>
+        <div className="form-pair">
+          <label>
+            证据级别
+            <select name="evidence_level" defaultValue="supplementary">
+              <option value="supplementary">补充资料</option>
+              <option value="official">课程官方</option>
+              <option value="classroom">课堂现场</option>
+            </select>
+          </label>
+          <label>
+            备注
+            <input name="notes" maxLength={2000} placeholder="链接内容说明" />
+          </label>
+        </div>
+        <small className="field-help">链接会进入证据权重计算，但外部链接不能冒充老师课堂讲授。</small>
+        {linkError ? <p className="form-error">{linkError}</p> : null}
+        <button className="button primary" disabled={busy}>{busy ? "保存中…" : "保存链接"}</button>
       </form>
       <BrowserRecorder sessionId={sessionId} onSaved={() => router.refresh()} />
     </div>

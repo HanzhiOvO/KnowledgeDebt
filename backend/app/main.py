@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from .config import Settings
@@ -37,6 +37,7 @@ from .providers.base import (
     ProviderRequestError,
     TranscriptionProvider,
 )
+from .providers.local_rule import LocalASRProvider, LocalRuleProvider
 from .providers.openai_compatible import OpenAICompatibleProvider
 from .retrieval import RetrievalPolicy
 from .scoring import minimum_daily_minutes
@@ -61,6 +62,26 @@ class RetrievalRequest(BaseModel):
 def _safe_name(name: str) -> str:
     clean = re.sub(r"[^A-Za-z0-9._\-\u4e00-\u9fff]", "_", Path(name).name)
     return clean[:180] or "resource"
+
+
+PRIVATE_RESOURCE_FIELDS = {"local_path", "storage_key"}
+PRIVATE_CHUNK_FIELDS = {"embedding", "metadata", "visual_path"}
+
+
+def _public_chunk(chunk: dict) -> dict:
+    return {key: value for key, value in chunk.items() if key not in PRIVATE_CHUNK_FIELDS}
+
+
+def _public_resource(resource: dict) -> dict:
+    result = {key: value for key, value in resource.items() if key not in PRIVATE_RESOURCE_FIELDS}
+    result["chunks"] = [_public_chunk(chunk) for chunk in resource.get("chunks", [])]
+    return result
+
+
+def _public_session(session: dict) -> dict:
+    result = dict(session)
+    result["resources"] = [_public_resource(resource) for resource in session.get("resources", [])]
+    return result
 
 
 def _permission(confirmed: bool, provider: object) -> None:
@@ -89,13 +110,19 @@ def create_app(
         settings.asr_model,
         settings.embedding_model,
     )
+    selected_ai_provider = ai_provider
+    if selected_ai_provider is None:
+        selected_ai_provider = LocalRuleProvider() if settings.ai_provider == "local_rule" else default_provider
+    selected_asr_provider = asr_provider
+    if selected_asr_provider is None:
+        selected_asr_provider = LocalASRProvider() if settings.asr_provider == "local_rule" else default_provider
     selected_embedding_provider = embedding_provider
     if selected_embedding_provider is None and settings.embedding_provider == "openai_compatible":
         selected_embedding_provider = default_provider
     service = KnowledgeService(
         database,
-        ai_provider or default_provider,
-        asr_provider or default_provider,
+        selected_ai_provider,
+        selected_asr_provider,
         selected_embedding_provider,
     )
     if storage_provider:
@@ -112,8 +139,8 @@ def create_app(
         yield
 
     app = FastAPI(
-        title="KnowledgeDebt API",
-        version="0.1.0",
+        title="知债 KnowledgeDebt API",
+        version="0.2.0",
         description="Local-first course reconstruction and mastery assessment API",
         lifespan=lifespan,
     )
@@ -174,7 +201,7 @@ def create_app(
 
     @app.get("/health")
     def health() -> dict:
-        return {"status": "ok", "version": "0.1.0"}
+        return {"status": "ok", "version": "0.2.0"}
 
     @app.get("/settings/provider")
     def provider_settings() -> dict:
@@ -186,8 +213,14 @@ def create_app(
             "embedding_provider": settings.embedding_provider,
             "embedding_model": settings.embedding_model,
             "storage_provider": storage.name,
-            "configured": bool(settings.api_key),
-            "external_upload_requires_confirmation": True,
+            "local_mode": settings.ai_provider == "local_rule",
+            "configured": not getattr(service.ai, "requires_external_upload", False) or bool(settings.api_key),
+            "asr_configured": bool(settings.api_key) and settings.asr_provider != "local_rule",
+            "access_token_configured": bool(settings.access_token),
+            "external_upload_requires_confirmation": (
+                getattr(service.ai, "requires_external_upload", False)
+                or getattr(service.embeddings, "requires_external_upload", False)
+            ),
         }
 
     @app.post("/courses", status_code=201)
@@ -210,7 +243,7 @@ def create_app(
 
     @app.post("/courses/{course_id}/sessions", status_code=201)
     def create_session(course_id: str, payload: SessionCreate) -> dict:
-        return database.create_session(course_id, payload)
+        return _public_session(database.create_session(course_id, payload))
 
     @app.get("/sessions")
     def list_sessions(course_id: str | None = None) -> list[dict]:
@@ -218,12 +251,12 @@ def create_app(
 
     @app.get("/sessions/{session_id}")
     def get_session(session_id: str) -> dict:
-        return database.get_session(session_id)
+        return _public_session(database.get_session(session_id))
 
     @app.get("/sessions/{session_id}/consent-manifest")
     def consent_manifest(session_id: str, operation: str, resource_id: str | None = None) -> dict:
         session = database.get_session(session_id)
-        if operation not in {"analysis", "assessment", "transcription", "indexing"}:
+        if operation not in {"analysis", "assessment", "remediation", "transcription", "indexing"}:
             raise HTTPException(status_code=422, detail="unsupported operation")
         providers = [(settings.ai_provider, service.ai), (settings.embedding_provider, service.embeddings)]
         resources = session["resources"]
@@ -329,7 +362,7 @@ def create_app(
             resource = database.get_resource(resource["id"])
         reconstruction, learning = service.refresh_scores(session_id)
         resource["session_scores"] = {"reconstruction": reconstruction, "learning_coverage": learning}
-        return resource
+        return _public_resource(resource)
 
     @app.post("/sessions/{session_id}/resources/link", status_code=201)
     def add_link_resource(session_id: str, payload: LinkResourceCreate) -> dict:
@@ -342,13 +375,63 @@ def create_app(
             extracted_text=payload.notes,
         )
         service.refresh_scores(session_id)
-        return resource
+        return _public_resource(resource)
+
+    @app.get("/resources/{resource_id}")
+    def get_resource(resource_id: str) -> dict:
+        return _public_resource(database.get_resource(resource_id))
+
+    @app.get("/resources/{resource_id}/raw")
+    def get_resource_raw(resource_id: str):
+        resource = database.get_resource(resource_id)
+        if resource.get("local_path"):
+            path = Path(resource["local_path"])
+        elif resource.get("storage_key"):
+            path = storage.materialize(
+                StoredObject(provider=resource["storage_provider"] or "local", key=resource["storage_key"])
+            )
+        else:
+            raise HTTPException(status_code=422, detail="This resource has no stored file")
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="Stored file is missing")
+        return FileResponse(
+            path,
+            media_type=resource.get("mime_type") or "application/octet-stream",
+            filename=resource["name"],
+        )
+
+    @app.get("/chunks/{chunk_id}")
+    def get_chunk(chunk_id: str) -> dict:
+        chunk = database.get_document_chunk(chunk_id)
+        public_chunk = _public_chunk(chunk)
+        return {
+            **public_chunk,
+            "resource": {
+                "id": chunk["resource_id"],
+                "name": chunk.get("resource_name"),
+                "type": chunk.get("resource_type"),
+                "evidence_level": chunk.get("resource_evidence_level"),
+                "mime_type": chunk.get("resource_mime_type"),
+            },
+            "preview_url": f"/chunks/{chunk_id}/visual" if chunk.get("visual_path") else None,
+        }
+
+    @app.get("/chunks/{chunk_id}/visual")
+    def get_chunk_visual(chunk_id: str):
+        chunk = database.get_document_chunk(chunk_id)
+        visual_path = chunk.get("visual_path")
+        if not visual_path:
+            raise HTTPException(status_code=404, detail="No visual preview is available for this chunk")
+        path = Path(visual_path).resolve()
+        if not path.is_file() or not path.is_relative_to(settings.data_dir.resolve()):
+            raise HTTPException(status_code=404, detail="No visual preview is available for this chunk")
+        return FileResponse(path)
 
     @app.patch("/resources/{resource_id}/quality")
     def update_resource_quality(resource_id: str, payload: ResourceQualityUpdate) -> dict:
         resource = database.update_resource_quality(resource_id, payload.coverage, payload.quality, payload.relevance)
         service.refresh_scores(resource["session_id"])
-        return resource
+        return _public_resource(resource)
 
     @app.post("/resources/{resource_id}/transcribe")
     async def transcribe(resource_id: str, payload: TranscriptionRequest) -> dict:
@@ -385,7 +468,7 @@ def create_app(
     async def analyze(session_id: str, payload: AnalysisRequest) -> dict:
         _permission(payload.confirm_external_upload, service.ai)
         _permission(payload.confirm_external_upload, service.embeddings)
-        return await service.analyze(session_id)
+        return _public_session(await service.analyze(session_id))
 
     async def run_transcription_job(job_id: str, resource_id: str) -> None:
         job = database.get_job(job_id)

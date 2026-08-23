@@ -20,11 +20,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <Link className="brand" href="/" aria-label="KnowledgeDebt 首页">
-          <span className="brand-mark">KD</span>
+        <Link className="brand" href="/" aria-label="知债首页">
+          <span className="brand-mark">知</span>
           <span>
-            <strong>KnowledgeDebt</strong>
-            <small>evidence → mastery</small>
+            <strong>知债</strong>
+            <small>KnowledgeDebt · 知识债务</small>
           </span>
         </Link>
         <nav className="nav-list" aria-label="主导航">
@@ -42,7 +42,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div className="sidebar-note">
           <span className="status-dot" />
           <div>
-            <strong>Self-hosted</strong>
+            <strong>本地优先</strong>
             <small>资料默认留在你的服务器</small>
           </div>
         </div>

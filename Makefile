@@ -1,7 +1,7 @@
 .PHONY: help start dev backend-install backend-run backend-test backend-lint migrate web-install web-run web-test legacy-client-get legacy-client-run legacy-client-test compose-up compose-down verify
 
 help:
-	@echo "KnowledgeDebt 常用命令"
+	@echo "知债 KnowledgeDebt 常用命令"
 	@echo "  make start           自动安装依赖并启动全部开发服务"
 	@echo "  make dev             同时启动 FastAPI 与 Next.js 开发服务"
 	@echo "  make verify          运行后端检查、测试与 Web 生产构建"
@@ -17,7 +17,7 @@ dev:
 	@$(MAKE) -j2 backend-run web-run
 
 backend-install:
-	python3 -m venv .venv
+	@if [ ! -x .venv/bin/python ]; then python3 -m venv .venv; fi
 	.venv/bin/pip install -r backend/requirements-dev.txt
 
 backend-run:
@@ -33,7 +33,7 @@ migrate:
 	cd backend && ../.venv/bin/alembic -c alembic.ini upgrade head
 
 web-install:
-	cd web && npm ci
+	cd web && npm_config_cache=../.npm-cache npm ci
 
 web-run:
 	cd web && npm run dev

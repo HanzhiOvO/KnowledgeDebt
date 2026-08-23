@@ -1,8 +1,8 @@
-# KnowledgeDebt
+# 知债 (KnowledgeDebt)
 
 > Classroom attendance may fail. Learning continuity should not.
 
-KnowledgeDebt is an open-source, Web-first system for recovering lectures a student missed or did not master. It reconstructs a real **Course Session** from evidence, creates a source-grounded learning path, measures knowledge debt, and clears that debt only after sufficient mastery evidence.
+**知债 (KnowledgeDebt)** is an open-source, Web-first system for recovering lectures a student missed or did not master. It reconstructs a real **Course Session** from evidence, creates a source-grounded learning path, measures knowledge debt, and clears that debt only after sufficient mastery evidence.
 
 [中文（默认）](README.md) · [Deployment](docs/deployment.md) · [Privacy](docs/privacy.md) · [Architecture](docs/architecture/0001-web-first-thin-backend.md)
 
@@ -20,6 +20,7 @@ A Session exists independently of recordings. Supplementary sources may teach bu
 
 ## Implemented
 
+- **zero-config local mode**: without `OPENAI_API_KEY`, a deterministic local rule engine keeps the full evidence-to-mastery loop usable; adding a key switches back to `openai_compatible`;
 - responsive Next.js 16 / React 19 primary Web client;
 - FastAPI API with optional single-user bearer-token protection and same-origin Web proxy;
 - four bounded evidence channels and recording-union timeline coverage;

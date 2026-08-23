@@ -4,12 +4,13 @@ set -Eeuo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-}"
+export npm_config_cache="${npm_config_cache:-$PROJECT_DIR/.npm-cache}"
 OPEN_BROWSER=1
 SKIP_INSTALL=0
 
 usage() {
   cat <<'EOF'
-KnowledgeDebt 一键启动脚本
+知债 KnowledgeDebt 一键启动脚本
 
 用法：
   ./start.sh [选项]
@@ -43,6 +44,25 @@ hash_files() {
 python_is_compatible() {
   "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' \
     >/dev/null 2>&1
+}
+
+create_virtualenv() {
+  if "$PYTHON_BIN" -m venv .venv 2>/dev/null; then
+    return 0
+  fi
+  printf '系统 python3-venv 不可用，正在用 get-pip.py 引导本地 virtualenv……\n'
+  require_command curl "启用 venv 引导回退需要 curl。"
+  local bootstrap="$PROJECT_DIR/.venv-bootstrap"
+  mkdir -p "$bootstrap"
+  curl --fail --silent --show-error --location \
+    https://bootstrap.pypa.io/get-pip.py -o "$PROJECT_DIR/.get-pip.py" \
+    || fail "无法下载 get-pip.py；可手动创建 .venv 后使用 ./start.sh --skip-install。"
+  "$PYTHON_BIN" "$PROJECT_DIR/.get-pip.py" --target "$bootstrap" --break-system-packages --no-warn-script-location \
+    || fail "get-pip.py 引导失败；可手动创建 .venv 后使用 ./start.sh --skip-install。"
+  PYTHONPATH="$bootstrap" "$PYTHON_BIN" -m pip install --target "$bootstrap" --no-warn-script-location virtualenv \
+    || fail "virtualenv 安装失败；可手动创建 .venv 后使用 ./start.sh --skip-install。"
+  PYTHONPATH="$bootstrap" "$PYTHON_BIN" -m virtualenv .venv \
+    || fail "virtualenv 创建失败；可手动创建 .venv 后使用 ./start.sh --skip-install。"
 }
 
 select_python() {
@@ -120,7 +140,7 @@ if (( SKIP_INSTALL == 0 )); then
   if [[ ! -x .venv/bin/python ]]; then
     select_python
     printf '正在创建 Python 虚拟环境……\n'
-    "$PYTHON_BIN" -m venv .venv
+    create_virtualenv
   fi
 
   REQUIREMENTS_STAMP=".venv/.knowledgedebt-requirements.sha256"
@@ -150,7 +170,7 @@ else
   [[ -d web/node_modules ]] || fail "未找到 web/node_modules；请去掉 --skip-install 后重试。"
 fi
 
-printf '\n正在启动 KnowledgeDebt……\n'
+printf '\n正在启动知债（KnowledgeDebt）……\n'
 printf 'Web：http://localhost:3000\nAPI：http://127.0.0.1:8123\n按 Ctrl+C 可同时停止服务。\n\n'
 
 if (( OPEN_BROWSER == 1 )); then

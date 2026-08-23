@@ -1,6 +1,6 @@
 # FastAPI 后端
 
-该目录包含 KnowledgeDebt 的领域逻辑、HTTP API、证据校验、检索、Provider、StorageProvider、数据库适配与后台 Job。
+该目录包含 知债（KnowledgeDebt）的领域逻辑、HTTP API、证据校验、检索、Provider、StorageProvider、数据库适配与后台 Job。
 
 ## 主要目录
 

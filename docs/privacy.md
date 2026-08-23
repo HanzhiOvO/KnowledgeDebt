@@ -25,8 +25,11 @@ The confirmation flag applies to one request or one job. It is stored with job p
 | Assessment / answer evaluation | question, answer, rubric on the server side, relevant Knowledge Points, retrieved evidence | unrelated Sessions, original media binaries, local paths |
 | Transcription | one selected original audio/video object, filename and MIME type | other Session resources, course history, local paths |
 | Indexing | text from chunks of the listed resources | original documents, media binaries, unrelated resources, local paths |
+| Remediation | weak Knowledge Point, student reason, retrieved evidence | unrelated Sessions, original media binaries, local paths |
 
 The default local hash embedding provider avoids external indexing and query calls entirely. If external embeddings are configured, upload only extracts and stores chunks; it does not call the provider automatically.
+
+When no API key is configured, AI also uses the built-in `local_rule` engine. It reads only retrieved chunks and never opens a network connection. Its remediation operation is subject to the same operation-specific consent boundary as analysis and assessment.
 
 ## Evidence minimization and validation
 

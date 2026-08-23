@@ -1,6 +1,6 @@
 # Web 主客户端
 
-这里是 KnowledgeDebt 的主要产品界面，使用 Next.js 16、React 19 与 TypeScript 构建。
+这里是 知债（KnowledgeDebt）的主要产品界面，使用 Next.js 16、React 19 与 TypeScript 构建。
 
 ## 本地运行
 

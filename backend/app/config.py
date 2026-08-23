@@ -26,14 +26,26 @@ class Settings:
     access_token: str | None = None
     database_url: str | None = None
 
+    @staticmethod
+    def _resolve_provider(name: str | None, default: str, *, api_key: str | None) -> str:
+        provider = (name or "").strip().lower()
+        if provider in {"", "auto"}:
+            return default if api_key else "local_rule"
+        return provider
+
     @classmethod
     def from_env(cls) -> Settings:
         data_dir = Path(os.getenv("KNOWLEDGEDEBT_DATA_DIR", "./data")).resolve()
+        api_key = os.getenv("OPENAI_API_KEY")
         return cls(
             data_dir=data_dir,
-            ai_provider=os.getenv("KNOWLEDGEDEBT_AI_PROVIDER", "openai_compatible"),
-            asr_provider=os.getenv("KNOWLEDGEDEBT_ASR_PROVIDER", "openai_compatible"),
-            api_key=os.getenv("OPENAI_API_KEY"),
+            ai_provider=cls._resolve_provider(
+                os.getenv("KNOWLEDGEDEBT_AI_PROVIDER"), "openai_compatible", api_key=api_key
+            ),
+            asr_provider=cls._resolve_provider(
+                os.getenv("KNOWLEDGEDEBT_ASR_PROVIDER"), "openai_compatible", api_key=api_key
+            ),
+            api_key=api_key,
             base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
             ai_model=os.getenv("KNOWLEDGEDEBT_AI_MODEL", "gpt-5-mini"),
             asr_model=os.getenv("KNOWLEDGEDEBT_ASR_MODEL", "gpt-4o-mini-transcribe"),

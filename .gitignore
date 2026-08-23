@@ -15,8 +15,12 @@ data/
 __pycache__/
 *.py[cod]
 .venv/
+.venv-bootstrap/
 .pytest_cache/
 .ruff_cache/
+
+# npm 本地缓存
+.npm-cache/
 
 # Legacy Flutter / Dart 构建产物
 .dart_tool/

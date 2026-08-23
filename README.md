@@ -1,12 +1,14 @@
-# KnowledgeDebt
+# 知债 KnowledgeDebt
 
 > **课堂可以缺席，知识不能欠账。**
+
+「知债」是 KnowledgeDebt 的中文名：**知**识的**债**务，需要用真实掌握来偿还。
 
 [![持续集成](https://github.com/HanzhiOvO/KnowledgeDebt/actions/workflows/ci.yml/badge.svg)](https://github.com/HanzhiOvO/KnowledgeDebt/actions/workflows/ci.yml)
 [![许可证：MIT](https://img.shields.io/badge/许可证-MIT-blue.svg)](LICENSE)
 [![状态：0.x 实验版](https://img.shields.io/badge/状态-0.x%20实验版-orange.svg)](#当前状态与方向)
 
-KnowledgeDebt 是一个开源、Web-first 的课程恢复系统，面向“课堂已经发生，但学生尚未真正掌握”的场景。它从录音、课件、教材、笔记等证据中还原一次真实的 **Course Session**，生成带来源的从零学习路径，计算知识债务，并且只在积累足够的掌握证据后清债。
+知债（KnowledgeDebt）是一个开源、Web-first 的课程恢复系统，面向“课堂已经发生，但学生尚未真正掌握”的场景。它从录音、课件、教材、笔记等证据中还原一次真实的 **Course Session**，生成带来源的从零学习路径，计算知识债务，并且只在积累足够的掌握证据后清债。
 
 [English](README.en.md) · [部署指南](docs/deployment.md) · [隐私模型](docs/privacy.md) · [数据库迁移](docs/migrations.md) · [架构决策](docs/architecture/0001-web-first-thin-backend.md)
 
@@ -30,6 +32,7 @@ Course Session → 证据 → 课堂还原 → Knowledge Point
 
 ## 已实现能力
 
+- **零配置本地模式**：没有 `OPENAI_API_KEY` 时自动启用本地规则引擎，纯本机即可完成“资料 → 课堂还原 → 学习路径 → 验收 → 清债”；配置 Key 后自动切回 `openai_compatible`；
 - Next.js 16 / React 19 响应式浏览器端：债务首页、课程、Session、资料、学习与验收工作区；
 - FastAPI 应用 API、可选单用户 Bearer Token，以及不会把令牌暴露到浏览器的同源代理；
 - 无资料、无录音也能创建并管理 Course Session；
@@ -38,7 +41,7 @@ Course Session → 证据 → 课堂还原 → Knowledge Point
 - 正式 TranscriptSegment，以及时间戳、PDF 页、PPT 页、Chunk、URL 的来源定位与服务端校验；
 - PDF 按页、PPTX 按页、文本按块解析，视觉派生文件、本地向量，以及“课堂还原 / 从零学习”双检索策略；
 - 多知识点自适应题目、弱项追问、持久化 MasteryEvidence、知识点依赖阻塞，以及至少两份有效证据才允许清债；
-- 转写、索引、分析、出题异步 Job，带阶段、进度、结果与错误状态；
+- 转写、索引、分析、出题异步 Job，带阶段、进度、结果与错误状态；Web 端已提供转写、重建索引、链接资料、原始文件访问与来源原文/页图预览；
 - 可替换 AI、ASR、Embedding、Storage Provider；支持本地文件和 S3 兼容存储；
 - 开发默认 SQLite，部署支持 PostgreSQL，包含 SQLAlchemy 元数据与经过测试的 Alembic 迁移；
 - Web + API + PostgreSQL 的 Docker Compose 基础配置，约 2 CPU / 2 GB 即可运行薄后端；
@@ -96,6 +99,8 @@ KNOWLEDGEDEBT_ASR_MODEL=gpt-4o-mini-transcribe
 ```
 
 默认 Embedding Provider 为本地确定性 `hash` 实现，因此上传文档不会静默外传文本。外部 Embedding 只会在一次明确同意的索引操作中调用。
+
+不配置任何 API Key 时，AI Provider 使用仓库内置的 `local_rule` 规则引擎。它只整理检索到的真实资料块、生成可溯源题目并按透明规则评分，**不会联网、不会伪造课堂内容**；课堂还原与知识点均标记为 `inferred`。需要更高质量的自然语言分析与转写时，再配置 OpenAI-compatible Provider。
 
 ## Docker Compose 部署
 
@@ -161,7 +166,7 @@ compose.yaml            Web + API + PostgreSQL 部署
 
 现在已经完成：知识债务全闭环、证据定位校验、自适应掌握度、后台 Job、Provider / Storage 边界、Web-first UI、PostgreSQL 部署路径和跨层自动化验收。
 
-后续适合推进：学习页的来源原页预览、更完整的录音播放、面向大资料库的 pgvector 检索、可选本地 Whisper / LLM、无障碍与本地化，以及独立的托管多用户身份方案。
+后续适合推进：更完整的录音播放、面向大资料库的 pgvector 检索、可选本地 Whisper / LLM、无障碍与本地化，以及独立的托管多用户身份方案。
 
 当前不承诺：社交网络、公共题库、教务系统集成、支付或教师管理产品。
 

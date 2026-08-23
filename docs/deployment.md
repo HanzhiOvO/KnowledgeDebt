@@ -20,6 +20,8 @@ make dev
 
 Next.js listens on `localhost:3000`; FastAPI listens on `127.0.0.1:8123`. The Web server forwards browser requests through `/api/backend`, so `OPENAI_API_KEY` and `KNOWLEDGEDEBT_ACCESS_TOKEN` are not compiled into browser JavaScript.
 
+`KNOWLEDGEDEBT_AI_PROVIDER=auto`（默认）会在没有 `OPENAI_API_KEY` 时启用本地规则引擎 `local_rule`，因此零配置环境也能完整体验分析、出题、验收闭环；配置 Key 后自动使用 OpenAI-compatible AI。
+
 With `KNOWLEDGEDEBT_DATABASE_URL` empty, the backend creates `knowledgedebt.sqlite3` under `KNOWLEDGEDEBT_DATA_DIR`. Uploaded resources and derived page images stay below the same data root.
 
 ## Compose deployment
@@ -85,7 +87,7 @@ Keep buckets private. StorageProvider materializes a selected object only when a
 
 ## Provider profiles
 
-The default AI and ASR contract is OpenAI-compatible:
+The default AI and ASR contract is OpenAI-compatible when an API key exists:
 
 ```dotenv
 OPENAI_BASE_URL=https://api.openai.com/v1
