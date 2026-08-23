@@ -6,13 +6,13 @@ import uvicorn
 
 from .config import Settings
 from .main import create_app
-from .native_runtime import backup_database_before_upgrade, prepare_native_data_directory
+from .native_runtime import prepare_native_data_directory, upgrade_native_database
 
 
 def main() -> None:
     settings = Settings.from_env()
     data_dir = prepare_native_data_directory(settings.data_dir)
-    backup_database_before_upgrade(
+    upgrade_native_database(
         data_dir,
         os.getenv("KNOWLEDGEDEBT_APP_VERSION", "0.2.0"),
     )

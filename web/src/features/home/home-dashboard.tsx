@@ -75,7 +75,7 @@ export function HomeDashboard({ home }: { home: HomePayload }) {
       ) : null}
 
       <section className="metric-grid four" aria-label="工作台概览">
-        <Metric label="今日课程" value={(home.today_occurrences ?? []).length} detail="来自当前学期课表" tone="blue" />
+        <Metric label="今日课程" value={activeOccurrences.length} detail="来自当前学期有效课表" tone="blue" />
         <Metric label="待审核" value={home.pending_review_count ?? 0} detail="低置信结果不会静默覆盖" tone="violet" />
         <Metric label="自动任务" value={activeJobs.length} detail="可刷新、可恢复、可重试" tone="amber" />
         <Metric label="知识债务" value={home.open_debt_count} detail={`${home.urgent_debt_count} 项高优先级`} tone="rose" />
@@ -88,7 +88,7 @@ export function HomeDashboard({ home }: { home: HomePayload }) {
             <Link href="/schedule">完整课表 →</Link>
           </div>
           <div className="today-timeline">
-            {(home.today_occurrences ?? []).length ? home.today_occurrences.map((occurrence) => (
+            {activeOccurrences.length ? activeOccurrences.map((occurrence) => (
               <TodayCourse key={occurrence.id} occurrence={occurrence} timezone={home.timezone} />
             )) : (
               <div className="compact-empty"><span>今天没有已同步课程</span><Link href="/schedule">连接或导入课表</Link></div>

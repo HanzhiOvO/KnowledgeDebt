@@ -366,6 +366,43 @@ export interface ReviewItem {
 export interface ApplicationSettings {
   timezone: string;
   auto_transcribe: boolean;
+  recording_chunk_retention_days: 7 | 14 | 30 | null;
+}
+
+export interface StorageMaintenanceSnapshot {
+  generated_at?: string | null;
+  cached: boolean;
+  needs_refresh: boolean;
+  retention_days: 7 | 14 | 30 | null;
+  categories: Array<{
+    key: string;
+    label: string;
+    bytes: number;
+    files: number;
+    truncated: boolean;
+  }>;
+  cleanup: {
+    eligible_recordings: number;
+    eligible_bytes: number;
+    protected_recordings?: number;
+    reasons?: Record<string, number>;
+  };
+}
+
+export interface StorageCleanupPreview {
+  preview_id: string;
+  expires_at: string;
+  recording_count: number;
+  bytes: number;
+  retention_days: 7 | 14 | 30 | null;
+}
+
+export interface StorageCleanupResult {
+  cleaned_recordings: number;
+  reclaimed_bytes: number;
+  already_clean: number;
+  failures: Array<{ recording_id: string; code: string; reason: string; reclaimed_bytes: number; recoverable: boolean }>;
+  replayed: boolean;
 }
 
 export interface ScheduleSyncChange {

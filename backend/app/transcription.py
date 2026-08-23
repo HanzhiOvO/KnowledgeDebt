@@ -450,25 +450,13 @@ class TranscriptionOrchestrator:
             timezone,
             parse_iso(session.get("starts_at") or session["created_at"]),
         ).isoformat()
-        raw = " ".join(
-            segment["text"].strip() for segment in segments[:5] if segment["text"].strip()
-        )
-        sentence = re.split(r"[。！？!?\n]", raw, maxsplit=1)[0]
-        topic = re.sub(r"\s+", " ", sentence).strip(" ，,：:；;")
-        prefix = re.compile(
-            r"^(?:(?:今天|本节课|这节课)\s*)?(?:我们\s*)?(?:主要\s*)?(?:来\s*)?"
-            r"(?:继续\s*)?(?:学习|讲解|介绍|讨论|复习)(?:了|一下)?[：:，,\s]*"
-        )
-        topic = prefix.sub("", topic).strip(" ，,：:；;")
-        if topic.startswith(course["name"]):
-            topic = topic[len(course["name"]) :].lstrip(" -—：:，,")
-        topic = topic[:20].rstrip(" ，,：:；;")
+        topic, high_confidence = self._local_topic_candidate(segments, course["name"])
         vague = {"课程内容", "课堂内容", "课堂笔记", "课程笔记", "本节课内容", "知识点", "复习"}
         significant_length = len(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]", topic))
         if not topic or topic in vague or significant_length < 3:
             return
         proposal = f"{course['name']}-{date_part}-{topic}"
-        if significant_length >= 6 and not self.automation.open_review_item(
+        if high_confidence and significant_length >= 6 and not self.automation.open_review_item(
             "session_topic", "session", session_id
         ):
             self.automation.update_session_title(
@@ -485,6 +473,59 @@ class TranscriptionOrchestrator:
             "确认本节课主题",
             proposed_value=proposal,
             confidence=0.62,
-            reasons=["来自转写开头的本地规则候选", "主题较短或已有用户决定，未自动覆盖标题"],
+            reasons=["来自多个转写片段的本地规则候选", "没有虚构转写中未出现的课程主题"],
             navigation_path=f"/sessions/{session_id}",
         )
+
+    @staticmethod
+    def _local_topic_candidate(
+        segments: list[dict[str, Any]], course_name: str
+    ) -> tuple[str, bool]:
+        """Pick a grounded topic while ignoring routine classroom opening language."""
+
+        greeting_prefix = re.compile(
+            r"^(?:(?:嗯|啊|好|那么|现在)[，,\s]*)?"
+            r"(?:(?:各位)?同学们?|大家)(?:上午|下午|晚上)?好[，,\s]*"
+        )
+        administration_prefix = re.compile(
+            r"^(?:(?:先|首先|咱们先)\s*)?"
+            r"(?:点(?:个|一下)?名|签到(?:一下)?|说(?:一件|个)?通知|看(?:一下)?考勤)"
+            r"[，,：:\s]*(?:(?:然后|接下来|下面)\s*)?"
+        )
+        topic_prefix = re.compile(
+            r"^(?:(?:好|那么|现在|接下来|下面|首先)[，,\s]*)?"
+            r"(?:(?:今天|本节课|这节课)\s*)?(?:我们\s*)?(?:主要\s*)?(?:来\s*)?"
+            r"(?:继续\s*)?(?:学习|讲解|讲|介绍|讨论|复习)(?:了|一下)?[：:，,\s]*"
+        )
+        explicit_topic = re.compile(
+            r"(?:学习|讲解|讲|介绍|讨论|复习|主题(?:是|为)|内容(?:是|为))"
+        )
+        routine_only = re.compile(
+            r"^(?:上课|开始上课|下课|休息(?:一下)?|大家签到(?:一下)?|"
+            r"点(?:个|一下)?名|先点(?:个|一下)?名|说(?:一件|个)?通知|"
+            r"今天我们来上课|同学们大家好)[。！!，,\s]*$"
+        )
+        candidates: list[tuple[float, str, bool]] = []
+        for segment_index, segment in enumerate(segments[:12]):
+            text = re.sub(r"\s+", " ", str(segment.get("text") or "")).strip()
+            for sentence_index, sentence in enumerate(re.split(r"[。！？!?；;\n]", text)):
+                original = sentence.strip(" ，,：:；;")
+                if not original or routine_only.fullmatch(original):
+                    continue
+                explicit = bool(explicit_topic.search(original))
+                cleaned = greeting_prefix.sub("", original).strip(" ，,：:；;")
+                cleaned = administration_prefix.sub("", cleaned).strip(" ，,：:；;")
+                cleaned = topic_prefix.sub("", cleaned).strip(" ，,：:；;")
+                if cleaned.startswith(course_name):
+                    cleaned = cleaned[len(course_name) :].lstrip(" -—：:，,")
+                cleaned = cleaned[:24].rstrip(" ，,：:；;")
+                length = len(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]", cleaned))
+                if length < 3 or routine_only.fullmatch(cleaned):
+                    continue
+                score = length + (30 if explicit else 0) - segment_index - sentence_index * 0.25
+                candidates.append((score, cleaned, explicit))
+        if not candidates:
+            return "", False
+        _, topic, explicit = max(candidates, key=lambda item: item[0])
+        significant_length = len(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]", topic))
+        return topic, explicit or significant_length >= 6

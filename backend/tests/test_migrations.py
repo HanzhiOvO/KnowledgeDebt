@@ -33,6 +33,12 @@ def test_alembic_upgrade_creates_complete_schema(tmp_path: Path):
     assert {"start_offset", "end_offset", "capture_range_json"} <= {
         column["name"] for column in inspector.get_columns("resources")
     }
+    assert "recording_chunk_retention_days" in {
+        column["name"] for column in inspector.get_columns("app_settings")
+    }
+    assert {"raw_chunks_verified_at", "raw_chunks_purged_at", "raw_chunks_purged_bytes"} <= {
+        column["name"] for column in inspector.get_columns("recordings")
+    }
 
 
 def test_sqlalchemy_repository_adapter_runs_application_queries(tmp_path: Path):

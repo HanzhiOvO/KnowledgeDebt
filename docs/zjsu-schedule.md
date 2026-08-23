@@ -21,6 +21,8 @@
 - `courses`: 课程、星期、节次、周次、单双周、教师、校区/楼宇/教室；
 - `adjustments`: 可选的调课、补课和停课记录。
 
+调停课按“有效课表”归一化：与原课次同日期、同节次的 `cancelled` 记录会覆盖原课次并保留稳定课次 ID，同时用 `adjustment_external_id` 保存教务来源记录 ID；`makeup` 是独立补课。跨日期或节次的调课使用 `source_kind: "adjustment"`，并通过 `original_date`、`original_start_period`、`original_end_period`（或明确的 `adjustment_of_external_id`）定位原课次；原课次会标为停课，新课次通过 `adjustment_of_id` 关联原课次。无法定位原课次的调课会拒绝导入，不猜测课程变化。
+
 导入会先生成 Academic Term、Schedule Rule 和 Occurrence。未来 Occurrence 只显示在课表，不创建 Session，也不形成知识债务。只有课堂已发生、用户打开课堂或有证据归档时才幂等物化 Session；停课记录永远不能创建 Session。
 
 ## 同步与会话安全

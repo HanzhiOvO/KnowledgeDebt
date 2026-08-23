@@ -460,6 +460,111 @@ def schedule_fixture(*, start_period: int = 1, include_course: bool = True, extr
     }
 
 
+def test_official_zjsu_fixture_preview_apply_list_and_reapply_are_effective_and_idempotent(
+    tmp_path: Path,
+):
+    fixture_path = Path(__file__).resolve().parents[2] / "docs/fixtures/zjsu-schedule.example.json"
+    raw = fixture_path.read_bytes()
+    settings = Settings(
+        data_dir=tmp_path / "official-zjsu-fixture",
+        ai_provider="openai_compatible",
+        asr_provider="openai_compatible",
+        api_key=None,
+        base_url="https://api.openai.com/v1",
+        ai_model="test-ai",
+        asr_model="test-asr",
+    )
+
+    with TestClient(create_app(settings=settings)) as client:
+        preview = client.post(
+            "/schedule/sync-batches/preview",
+            files={"file": (fixture_path.name, raw, "application/json")},
+        )
+        assert preview.status_code == 201, preview.text
+        batch = preview.json()
+        assert batch["diff"]["summary"] == {
+            "added": 9,
+            "modified": 0,
+            "removed": 0,
+            "conflicts": 0,
+        }
+
+        applied = client.post(f"/schedule/sync-batches/{batch['id']}/apply")
+        assert applied.status_code == 200, applied.text
+        assert applied.json()["batch"]["status"] == "applied"
+        occurrences = client.get("/schedule/occurrences").json()
+        assert len(occurrences) == 9
+
+        cancelled = next(item for item in occurrences if item["occurrence_date"] == "2026-10-12")
+        assert cancelled["external_id"] == "example-compiler-monday:2026-10-12"
+        assert cancelled["status"] == "cancelled"
+        assert cancelled["source_kind"] == "adjustment"
+        assert cancelled["adjustment_external_id"] == "example-compiler-cancel-2026-10-12"
+        makeup = next(
+            item
+            for item in occurrences
+            if item["external_id"] == "example-compiler-makeup-2026-10-17"
+        )
+        assert makeup["status"] == "scheduled"
+        assert makeup["source_kind"] == "makeup"
+
+        duplicate = client.post(
+            "/schedule/sync-batches/preview",
+            files={"file": (fixture_path.name, raw, "application/json")},
+        ).json()
+        assert duplicate["id"] == batch["id"]
+        assert duplicate["status"] == "applied"
+        reapplied = client.post(f"/schedule/sync-batches/{batch['id']}/apply")
+        assert reapplied.status_code == 200
+        assert [item["id"] for item in client.get("/schedule/occurrences").json()] == [
+            item["id"] for item in occurrences
+        ]
+
+
+def test_zjsu_moved_lesson_cancels_original_and_links_new_effective_occurrence(tmp_path: Path):
+    fixture_path = Path(__file__).resolve().parents[2] / "docs/fixtures/zjsu-schedule.example.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    fixture["adjustments"].append(
+        {
+            "external_id": "example-compiler-move-2026-10-26",
+            "rule_external_id": "example-compiler-monday",
+            "original_date": "2026-10-26",
+            "original_start_period": 1,
+            "original_end_period": 2,
+            "date": "2026-10-27",
+            "status": "scheduled",
+            "source_kind": "adjustment",
+            "start_period": 3,
+            "end_period": 4,
+            "room": "C303",
+            "notes": "示例调课",
+        }
+    )
+    automation = AutomationRepository(Database(tmp_path / "moved-zjsu-fixture.sqlite3"))
+    parsed = ZJSUFixtureParser().parse(json.dumps(fixture, ensure_ascii=False))
+    batch = automation.create_schedule_sync_batch(
+        "zjsu_undergraduate_v9", "zjsu_fixture", parsed
+    )
+    automation.apply_schedule_sync_batch(batch["id"])
+
+    occurrences = automation.list_occurrences()
+    original = next(
+        item
+        for item in occurrences
+        if item["external_id"] == "example-compiler-monday:2026-10-26"
+    )
+    moved = next(
+        item
+        for item in occurrences
+        if item["external_id"] == "example-compiler-move-2026-10-26"
+    )
+    assert original["status"] == "cancelled"
+    assert original["adjustment_external_id"] == moved["adjustment_external_id"]
+    assert moved["status"] == "scheduled"
+    assert moved["source_kind"] == "adjustment"
+    assert moved["adjustment_of_id"] == original["id"]
+
+
 def test_authoritative_schedule_snapshot_handles_changes_removals_retries_and_rollback(tmp_path: Path):
     automation = AutomationRepository(Database(tmp_path / "schedule-sync.sqlite3"))
     parser = ZJSUFixtureParser()
@@ -591,6 +696,98 @@ def test_review_later_can_be_reopened_and_every_transition_is_audited(tmp_path: 
             "SELECT COUNT(*) AS count FROM audit_log WHERE subject_id=?", (review["id"],)
         ).fetchone()["count"]
     assert audit_count == 3
+
+
+def test_review_decision_rolls_back_side_effect_and_audit_then_is_idempotent(tmp_path: Path):
+    database = Database(tmp_path / "atomic-review.sqlite3")
+    automation = AutomationRepository(database)
+    session = build_session(database)
+    original_title = session["title"]
+    review = automation.create_review_item(
+        "session_topic",
+        "session",
+        session["id"],
+        "确认课堂主题",
+        proposed_value="进程调度",
+        confidence=0.78,
+    )
+
+    with pytest.raises(RuntimeError, match="simulated review"):
+        automation.apply_review_decision(
+            review["id"],
+            "edit_accept",
+            edited_value="调度算法",
+            fail_after_side_effect=True,
+        )
+    assert database.get_session(session["id"])["title"] == original_title
+    assert automation.get_review_item(review["id"])["status"] == "pending"
+    with database.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) AS count FROM audit_log WHERE subject_id IN (?, ?)",
+            (session["id"], review["id"]),
+        ).fetchone()["count"] == 0
+
+    accepted = automation.apply_review_decision(
+        review["id"], "edit_accept", edited_value="调度算法", reason="人工确认"
+    )
+    repeated = automation.apply_review_decision(review["id"], "reject", reason="重复请求")
+    assert accepted["status"] == repeated["status"] == "accepted"
+    assert database.get_session(session["id"])["title"] == "调度算法"
+    with database.connect() as conn:
+        audits = conn.execute(
+            "SELECT action FROM audit_log WHERE subject_id IN (?, ?) ORDER BY action",
+            (session["id"], review["id"]),
+        ).fetchall()
+    assert [row["action"] for row in audits] == ["review_decision", "update_session_title"]
+
+
+def test_concurrent_accept_and_reject_have_one_terminal_review_outcome(tmp_path: Path):
+    database = Database(tmp_path / "concurrent-review.sqlite3")
+    automation = AutomationRepository(database)
+    session = build_session(database)
+    item = automation.create_inbox_item(
+        {
+            "name": "课堂录音.webm",
+            "mime_type": "audio/webm",
+            "type": "audio",
+            "storage_provider": "local",
+            "storage_key": "inbox/concurrent-review.webm",
+        }
+    )
+    review = automation.create_review_item(
+        "archive_match",
+        "inbox_item",
+        item["id"],
+        "确认资料归档位置",
+        proposed_value=session["id"],
+        confidence=0.7,
+    )
+
+    actions = ["accept", "reject"] * 8
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(
+            pool.map(
+                lambda action: automation.apply_review_decision(review["id"], action),
+                actions,
+            )
+        )
+    final = automation.get_review_item(review["id"])
+    assert {result["status"] for result in results} == {final["status"]}
+    resources = database.list_resources(session["id"])
+    assert len(resources) == (1 if final["status"] == "accepted" else 0)
+    with database.connect() as conn:
+        review_audits = conn.execute(
+            """SELECT COUNT(*) AS count FROM audit_log
+               WHERE action='review_decision' AND subject_id=?""",
+            (review["id"],),
+        ).fetchone()["count"]
+        adoption_audits = conn.execute(
+            """SELECT COUNT(*) AS count FROM audit_log
+               WHERE action='adopt_inbox_item' AND subject_id=?""",
+            (item["id"],),
+        ).fetchone()["count"]
+    assert review_audits == 1
+    assert adoption_audits == (1 if final["status"] == "accepted" else 0)
 
 
 def test_occurrence_and_inbox_concurrency_return_one_materialized_record(tmp_path: Path):

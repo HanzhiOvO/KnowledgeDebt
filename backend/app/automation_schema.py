@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS app_settings (
   id TEXT PRIMARY KEY CHECK (id='default'),
   timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
   auto_transcribe INTEGER NOT NULL DEFAULT 1,
+  recording_chunk_retention_days INTEGER DEFAULT 14,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS provider_profiles (
@@ -69,7 +70,8 @@ CREATE TABLE IF NOT EXISTS schedule_occurrences (
   occurrence_date TEXT NOT NULL, starts_at TEXT NOT NULL, ends_at TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'scheduled', source_kind TEXT NOT NULL DEFAULT 'regular',
   campus TEXT, building TEXT, room TEXT, teacher TEXT, notes TEXT NOT NULL DEFAULT '',
-  external_id TEXT NOT NULL, adjustment_of_id TEXT REFERENCES schedule_occurrences(id) ON DELETE SET NULL,
+  external_id TEXT NOT NULL, adjustment_external_id TEXT,
+  adjustment_of_id TEXT REFERENCES schedule_occurrences(id) ON DELETE SET NULL,
   source TEXT NOT NULL DEFAULT 'manual', last_seen_batch_id TEXT
     REFERENCES schedule_sync_batches(id) ON DELETE SET NULL,
   sync_status TEXT NOT NULL DEFAULT 'active',
@@ -106,7 +108,8 @@ CREATE TABLE IF NOT EXISTS recordings (
   auto_transcribe INTEGER NOT NULL DEFAULT 1,
   resource_id TEXT UNIQUE REFERENCES resources(id) ON DELETE SET NULL,
   failure_reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-  completed_at TEXT
+  completed_at TEXT, raw_chunks_verified_at TEXT, raw_chunks_purged_at TEXT,
+  raw_chunks_purged_bytes BIGINT
 );
 CREATE TABLE IF NOT EXISTS recording_chunks (
   recording_id TEXT NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,

@@ -77,6 +77,8 @@ for _ in {1..120}; do
   sleep 0.25
 done
 curl -fsS "http://127.0.0.1:$KD_SMOKE_API_PORT/health" | grep '"status":"ok"'
+curl -fsS "http://127.0.0.1:$KD_SMOKE_API_PORT/maintenance/storage" | \
+  grep -q '"needs_refresh":true'
 KD_SMOKE_PROVIDER_SETTINGS="$(curl -fsS "http://127.0.0.1:$KD_SMOKE_API_PORT/settings/provider")"
 printf '%s' "$KD_SMOKE_PROVIDER_SETTINGS" | grep -q '"binary_ready":true'
 printf '%s' "$KD_SMOKE_PROVIDER_SETTINGS" | grep -q '"id":"medium-q5_0"'
@@ -155,4 +157,18 @@ curl -fsS "http://127.0.0.1:$KD_SMOKE_WEB_PORT" | grep -q 'KnowledgeDebt'
 curl -fsS "http://127.0.0.1:$KD_SMOKE_WEB_PORT/api/backend/health" | grep '"status":"ok"'
 
 [[ -s "$KD_SMOKE_TEMP/data/knowledgedebt.sqlite3" ]]
+/usr/bin/sqlite3 "$KD_SMOKE_TEMP/data/knowledgedebt.sqlite3" \
+  'SELECT version_num FROM alembic_version' | grep -q '^20260823_0008$'
+[[ "$(stat -f '%Lp' "$KD_SMOKE_TEMP/data/diagnostics")" == "700" ]]
+curl -fsS -X POST "http://127.0.0.1:$KD_SMOKE_API_PORT/maintenance/diagnostics/export" \
+  -o "$KD_SMOKE_TEMP/diagnostics.zip"
+unzip -Z1 "$KD_SMOKE_TEMP/diagnostics.zip" | grep -q '^manifest.json$'
+unzip -Z1 "$KD_SMOKE_TEMP/diagnostics.zip" | grep -q '^contents.json$'
+if unzip -Z1 "$KD_SMOKE_TEMP/diagnostics.zip" | \
+  grep -E '(sqlite|transcript|audio|notes|schedule)' >/dev/null; then
+  echo "诊断包包含非白名单内容" >&2
+  exit 1
+fi
+find "$KD_SMOKE_TEMP/data/diagnostics" -name '*.zip' -print -quit | \
+  grep -q . && { echo "诊断包流式下载后未清理服务端副本" >&2; exit 1; }
 echo "原生应用运行时冒烟测试通过"

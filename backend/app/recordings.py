@@ -361,8 +361,9 @@ class RecordingManager:
                 )
                 conn.execute(
                     """UPDATE recordings SET status='completed', resource_id=?, completed_at=?,
-                       duration_seconds=?, failure_reason=NULL, updated_at=? WHERE id=?""",
-                    (resource_id, now, measured_duration, now, recording_id),
+                       duration_seconds=?, failure_reason=NULL, raw_chunks_verified_at=?,
+                       updated_at=? WHERE id=?""",
+                    (resource_id, now, measured_duration, now, now, recording_id),
                 )
                 created = True
         return self.db.get_resource(resource_id), created, bool(recording["auto_transcribe"])

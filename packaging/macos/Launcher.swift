@@ -83,6 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             root,
             stateDirectory,
             logsDirectory,
+            root.appendingPathComponent("diagnostics", isDirectory: true),
             root.appendingPathComponent("backups", isDirectory: true),
             root.appendingPathComponent("models", isDirectory: true),
             root.appendingPathComponent("resources", isDirectory: true),
@@ -91,6 +92,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             root.appendingPathComponent("secrets", isDirectory: true),
         ] {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: 0o700)],
+                ofItemAtPath: directory.path
+            )
         }
     }
 
@@ -197,6 +202,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             to: runtimeState.appendingPathComponent("web-url.txt"),
             atomically: true,
             encoding: .utf8
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: 0o600)],
+            ofItemAtPath: runtimeState.appendingPathComponent("web-url.txt").path
         )
         waitForServices(apiPort: apiPort, webPort: webPort)
     }
@@ -313,15 +322,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func logHandle(name: String) throws -> FileHandle {
         let url = logs.appendingPathComponent(name)
+        try rotateLogIfNeeded(url, maxBytes: 5 * 1024 * 1024, retainedFiles: 5)
         if !FileManager.default.fileExists(atPath: url.path) {
-            FileManager.default.createFile(atPath: url.path, contents: nil)
+            FileManager.default.createFile(
+                atPath: url.path,
+                contents: nil,
+                attributes: [.posixPermissions: NSNumber(value: 0o600)]
+            )
         }
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: 0o600)],
+            ofItemAtPath: url.path
+        )
         let handle = try FileHandle(forWritingTo: url)
         try handle.seekToEnd()
         let marker = "\n=== KnowledgeDebt launch \(ISO8601DateFormatter().string(from: Date())) ===\n"
         try handle.write(contentsOf: Data(marker.utf8))
         logHandles.append(handle)
         return handle
+    }
+
+    private func rotateLogIfNeeded(_ url: URL, maxBytes: UInt64, retainedFiles: Int) throws {
+        guard retainedFiles > 0,
+              let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attributes[.size] as? NSNumber,
+              size.uint64Value >= maxBytes else { return }
+        let manager = FileManager.default
+        for index in stride(from: retainedFiles, through: 1, by: -1) {
+            let destination = logs.appendingPathComponent("\(url.lastPathComponent).\(index)")
+            if manager.fileExists(atPath: destination.path) {
+                try manager.removeItem(at: destination)
+            }
+            let source = index == 1
+                ? url
+                : logs.appendingPathComponent("\(url.lastPathComponent).\(index - 1)")
+            if manager.fileExists(atPath: source.path) {
+                try manager.moveItem(at: source, to: destination)
+                try manager.setAttributes(
+                    [.posixPermissions: NSNumber(value: 0o600)],
+                    ofItemAtPath: destination.path
+                )
+            }
+        }
     }
 
     private func watch(process: Process, name: String) {

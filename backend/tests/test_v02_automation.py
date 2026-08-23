@@ -483,6 +483,54 @@ def test_session_topic_candidate_uses_application_timezone_and_respects_manual_l
     assert len(automation.list_review_items("pending")) == 1
 
 
+def test_session_topic_ignores_greetings_roll_call_and_classroom_notices(tmp_path: Path):
+    database = Database(tmp_path / "topic-routine-language.sqlite3")
+    automation = AutomationRepository(database)
+    course = database.create_course(CourseCreate(name="编译原理", semester="2026 秋"))
+    profile = {
+        "id": "local-test",
+        "name": "本地测试 ASR",
+        "default_model": "fixture",
+        "external": False,
+        "capabilities": [],
+    }
+    orchestrator = TranscriptionOrchestrator(
+        database,
+        automation,
+        LocalStorageProvider(tmp_path / "objects"),
+        lambda: (profile, FlakyChunkProvider()),
+        TwoChunkPreparer(tmp_path),
+        lambda session_id: None,
+    )
+    session = database.create_session(
+        course["id"], SessionCreate(title="编译原理-2026-09-07-待识别")
+    )
+
+    orchestrator._suggest_title(
+        session["id"],
+        [
+            {"text": "同学们大家好。"},
+            {"text": "咱们先点个名，然后开始。"},
+            {"text": "下面讲解LR项目集规范族和冲突处理。"},
+        ],
+    )
+    assert database.get_session(session["id"])["title"].endswith("LR项目集规范族和冲突处理")
+
+    routine_session = database.create_session(
+        course["id"], SessionCreate(title="编译原理-2026-09-14-待识别")
+    )
+    orchestrator._suggest_title(
+        routine_session["id"],
+        [
+            {"text": "同学们大家好。"},
+            {"text": "先点一下名。"},
+            {"text": "说个通知。"},
+        ],
+    )
+    assert database.get_session(routine_session["id"])["title"].endswith("待识别")
+    assert automation.open_review_item("session_topic", "session", routine_session["id"]) is None
+
+
 def test_restart_adopts_running_job_and_skips_persisted_successful_chunk(tmp_path: Path):
     database = Database(tmp_path / "restart-transcription.sqlite3")
     automation = AutomationRepository(database)

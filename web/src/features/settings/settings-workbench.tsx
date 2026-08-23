@@ -2,10 +2,10 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-import { mutate } from "@/lib/client-api";
-import type { ApplicationSettings, LocalASRStatus, LocalModel, ProviderProfile, ProviderSettings, ProviderUsage, ScheduleConnection } from "@/types/domain";
+import { mutate, publicApiUrl } from "@/lib/client-api";
+import type { ApplicationSettings, LocalASRStatus, LocalModel, ProviderProfile, ProviderSettings, ProviderUsage, ScheduleConnection, StorageCleanupPreview, StorageCleanupResult, StorageMaintenanceSnapshot } from "@/types/domain";
 
 const groups = [
   { id: "ai", label: "AI 分析", capability: "structured_generation" },
@@ -228,24 +228,32 @@ export function SettingsWorkbench({
         <span className="local-pill"><i />Local-first</span>
       </header>
       <div className="settings-tabs" role="tablist" aria-label="设置分类">
-        {[["general", "应用偏好"], ["providers", "Provider"], ["schedule", "教务同步"], ["privacy", "隐私与存储"], ["usage", "用量与费用"]].map(([id, label]) => <button aria-selected={tab === id} className={tab === id ? "active" : ""} key={id} onClick={() => setTab(id)} role="tab">{label}</button>)}
+        {[["general", "常用设置"], ["providers", "模型与转写服务"], ["schedule", "教务同步"], ["privacy", "存储与诊断"], ["usage", "用量与费用"]].map(([id, label]) => <button aria-selected={tab === id} className={tab === id ? "active" : ""} key={id} onClick={() => setTab(id)} role="tab">{label}</button>)}
       </div>
       {error ? <div className="notice error" role="alert">{error}</div> : null}
 
       {tab === "general" ? <ApplicationPreferences application={application} busy={busy === "application"} onSave={saveApplication} /> : null}
       {tab === "providers" ? (
         <section className="settings-section" id="providers">
-          <div className="section-heading"><div><span className="eyebrow">ROUTING</span><h2>默认能力路由</h2></div><button className="button primary" onClick={() => openProfile()}>＋ 新建 Profile</button></div>
+          <div className="section-heading"><div><span className="eyebrow">MODEL & TRANSCRIPTION</span><h2>模型与转写服务</h2><p>常用选项优先展示，兼容接口和原始能力放在高级设置中。</p></div><button className="button primary" onClick={() => openProfile()}>＋ 新建服务</button></div>
           <div className="quick-provider-bar" aria-label="常用 Provider 快速配置">
-            <span><strong>快速配置文本模型</strong><small>仍使用加密密钥或环境变量引用；保存后请测试连接再设为默认。</small></span>
+            <span><strong>快速配置文本模型</strong><small>选厂商、填密钥和模型即可；保存后请先测试连接。</small></span>
             <div>{quickProviderPresets.map((preset) => <button className="button ghost" key={preset.id} onClick={() => openProfile(preset)}>{preset.label}</button>)}</div>
           </div>
           <div className="routing-grid">
-            {groups.map((group) => {
+            {groups.filter((group) => group.id !== "embedding").map((group) => {
               const capable = settings?.profiles.filter((profile) => profile.enabled && profile.capabilities.some((capability) => capability === group.capability || (group.id === "asr" && capability === "async_audio_transcription"))) ?? [];
-              return <label className="routing-card" key={group.id}><span>{group.label}</span><select disabled={busy === group.id || !capable.length} onChange={(event) => setDefault(group.id, event.target.value)} value={settings?.defaults[group.id]?.id ?? ""}><option value="">未配置</option>{capable.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} · {profile.default_model}</option>)}</select><small>{group.id === "asr" ? "控制默认自动转写" : group.id === "embedding" ? "本地 Hash 默认不外发" : "课堂分析与验收"}</small></label>;
+              return <label className="routing-card" key={group.id}><span>{group.label}</span><select disabled={busy === group.id || !capable.length} onChange={(event) => setDefault(group.id, event.target.value)} value={settings?.defaults[group.id]?.id ?? ""}><option value="">未配置</option>{capable.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} · {profile.default_model}</option>)}</select><small>{group.id === "asr" ? "控制默认自动转写" : "课堂分析与验收"}</small></label>;
             })}
           </div>
+          <details className="panel advanced-settings">
+            <summary>高级设置</summary>
+            <p>适合需要自定义兼容接口或向量检索的用户。折叠后已保存的值不会丢失。</p>
+            {groups.filter((group) => group.id === "embedding").map((group) => {
+              const capable = settings?.profiles.filter((profile) => profile.enabled && profile.capabilities.includes(group.capability)) ?? [];
+              return <label className="routing-card" key={group.id}><span>{group.label}</span><select disabled={busy === group.id || !capable.length} onChange={(event) => setDefault(group.id, event.target.value)} value={settings?.defaults[group.id]?.id ?? ""}><option value="">未配置</option>{capable.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} · {profile.default_model}</option>)}</select><small>默认本地 Hash 检索不外发</small></label>;
+            })}
+          </details>
           <LocalASRPanel status={settings?.local_asr} />
           <LocalModelManagerPanel
             initialModels={settings?.local_models ?? []}
@@ -262,23 +270,27 @@ export function SettingsWorkbench({
       ) : null}
 
       {tab === "schedule" ? <ScheduleSettings connection={connection} /> : null}
-      {tab === "privacy" ? <PrivacySettings encryption={Boolean(settings?.secret_encryption_configured)} storage={settings?.storage_provider} /> : null}
+      {tab === "privacy" ? <StorageAndDiagnostics application={application} encryption={Boolean(settings?.secret_encryption_configured)} onError={setError} storage={settings?.storage_provider} /> : null}
       {tab === "usage" ? <UsageSettings usage={usage} /> : null}
 
       {adding ? (
         <div className="modal-backdrop" role="presentation">
           <form action={addProfile} className="consent-modal panel profile-form" role="dialog" aria-modal="true" aria-labelledby="profile-title">
-            <span className="eyebrow">NEW PROVIDER PROFILE</span><h2 id="profile-title">新增 Provider Profile</h2>
-            <label>接入方式<select onChange={(event) => { setAdapter(event.target.value as AdapterId); setQuickPreset(null); }} value={adapter}>{(Object.keys(adapters) as AdapterId[]).map((id) => <option key={id} value={id}>{adapters[id].label}</option>)}</select></label>
+            <span className="eyebrow">NEW SERVICE</span><h2 id="profile-title">新增模型或转写服务</h2>
             <p className="muted">{adapters[adapter].hint}</p>
-            <div className="form-pair"><label>名称<input key={`${adapter}-${quickPreset?.id ?? "custom"}-name`} name="name" required defaultValue={quickPreset?.name ?? (adapter === "local_rule" ? "本地规则引擎" : "")} placeholder={adapter === "openai_compatible" ? "我的 OpenAI" : adapter === "local_rule" ? "本地规则引擎" : "寝室服务器本地转写"} /></label><label>Vendor<select key={`${adapter}-${quickPreset?.id ?? "custom"}-vendor`} name="vendor" defaultValue={quickPreset?.vendor ?? adapters[adapter].vendors.at(-1)?.[0]}>{adapters[adapter].vendors.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></div>
-            <label>{adapters[adapter].endpointLabel}<input key={`${adapter}-${quickPreset?.id ?? "custom"}-endpoint`} name="base_url" defaultValue={quickPreset?.baseUrl ?? ""} required={adapters[adapter].endpointRequired} placeholder={adapters[adapter].endpointPlaceholder} disabled={adapter === "local_rule"} /></label>
+            <div className="form-pair"><label>服务名称<input key={`${adapter}-${quickPreset?.id ?? "custom"}-name`} name="name" required defaultValue={quickPreset?.name ?? (adapter === "local_rule" ? "本地规则引擎" : "")} placeholder={adapter === "openai_compatible" ? "我的 OpenAI" : adapter === "local_rule" ? "本地规则引擎" : "本地转写服务"} /></label><label>厂商<select key={`${adapter}-${quickPreset?.id ?? "custom"}-vendor`} name="vendor" defaultValue={quickPreset?.vendor ?? adapters[adapter].vendors.at(-1)?.[0]}>{adapters[adapter].vendors.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></div>
             <label>{adapters[adapter].modelLabel}<input key={`${adapter}-${quickPreset?.id ?? "custom"}-model`} name="default_model" defaultValue={quickPreset?.model ?? (adapter === "local_rule" ? "transparent-rules-v1" : "")} required={adapter !== "local_whisper_cpp"} placeholder={adapters[adapter].modelPlaceholder} /></label>
-            {adapters[adapter].credential ? <div className="form-pair"><label>环境变量引用<input name="credential_reference" placeholder={adapter === "openai_compatible" ? "env:OPENAI_API_KEY" : "env:LOCAL_ASR_TOKEN（本地服务通常不需要）"} /></label><label>或直接输入密钥<input disabled={!settings?.secret_encryption_configured} name="credential" placeholder={settings?.secret_encryption_configured ? "将加密保存" : "需先配置加密主密钥"} type="password" /></label></div> : null}
-            {adapter === "openai_compatible" ? <label>可选自定义请求头（JSON）<textarea name="custom_headers" placeholder={'{"OpenAI-Organization":"org_..."}'} rows={3} /><small>仅用于组织、项目或租户标识。Authorization、Cookie、X-API-Key 等敏感头会被拒绝，请使用上方加密密钥字段。</small></label> : null}
-            <fieldset className="capability-picker" key={`${adapter}-${quickPreset?.id ?? "custom"}-capabilities`}><legend>真实能力（按实际接口勾选）</legend>{adapters[adapter].capabilities.map((capability) => <label key={`${adapter}-${capability}`}><input defaultChecked={quickPreset ? ["structured_generation", "chat_analysis"].includes(capability) : (adapters[adapter].preset as readonly string[]).includes(capability)} name="capabilities" type="checkbox" value={capability} />{capability}</label>)}</fieldset>
+            {adapters[adapter].credential ? <label>API 密钥<input autoComplete="off" disabled={!settings?.secret_encryption_configured} name="credential" placeholder={settings?.secret_encryption_configured ? "新密钥将加密保存" : "需先配置加密主密钥"} type="password" /></label> : null}
+            <details className="advanced-settings">
+              <summary>高级接入设置</summary>
+              <label>接入方式<select onChange={(event) => { setAdapter(event.target.value as AdapterId); setQuickPreset(null); }} value={adapter}>{(Object.keys(adapters) as AdapterId[]).map((id) => <option key={id} value={id}>{adapters[id].label}</option>)}</select></label>
+              <label>{adapters[adapter].endpointLabel}<input key={`${adapter}-${quickPreset?.id ?? "custom"}-endpoint`} name="base_url" defaultValue={quickPreset?.baseUrl ?? (adapter === "openai_compatible" ? "https://api.openai.com/v1" : "")} required={adapters[adapter].endpointRequired} placeholder={adapters[adapter].endpointPlaceholder} disabled={adapter === "local_rule"} /></label>
+              {adapters[adapter].credential ? <label>环境变量引用<input name="credential_reference" placeholder={adapter === "openai_compatible" ? "env:OPENAI_API_KEY" : "env:LOCAL_ASR_TOKEN"} /></label> : null}
+              {adapter === "openai_compatible" ? <label>可选自定义请求头（JSON）<textarea name="custom_headers" placeholder={'{"OpenAI-Organization":"org_..."}'} rows={3} /><small>敏感请求头会被拒绝，请使用加密密钥字段。</small></label> : null}
+              <fieldset className="capability-picker" key={`${adapter}-${quickPreset?.id ?? "custom"}-capabilities`}><legend>原始能力</legend>{adapters[adapter].capabilities.map((capability) => <label key={`${adapter}-${capability}`}><input defaultChecked={quickPreset ? ["structured_generation", "chat_analysis"].includes(capability) : (adapters[adapter].preset as readonly string[]).includes(capability)} name="capabilities" type="checkbox" value={capability} />{capability}</label>)}</fieldset>
+            </details>
             <p className="muted">{adapters[adapter].external ? "该 Profile 会被标记为外部：每次转写或分析都需要单独授权。" : "该 Profile 会被强制标记为本地：不外发音频，无需逐次授权。"}</p>
-            <div className="modal-actions"><button className="button secondary" onClick={() => { setAdding(false); setQuickPreset(null); }} type="button">取消</button><button className="button primary" disabled={busy === "new"}>{busy === "new" ? "保存中…" : "保存 Profile"}</button></div>
+            <div className="modal-actions"><button className="button secondary" onClick={() => { setAdding(false); setQuickPreset(null); }} type="button">取消</button><button className="button primary" disabled={busy === "new"}>{busy === "new" ? "保存中…" : "保存服务"}</button></div>
           </form>
         </div>
       ) : null}
@@ -300,21 +312,20 @@ function ProviderCard({ profile, defaults, busy, onTest }: { profile: ProviderPr
     <article className="panel provider-card">
       <header>
         <span className="provider-logo">{profile.name.slice(0, 1).toUpperCase()}</span>
-        <span><strong>{profile.name}</strong><small>{profile.vendor} · {profile.adapter}</small></span>
+        <span><strong>{profile.name}</strong><small>{profile.vendor}</small></span>
         <span className={`badge ${profile.enabled ? "accepted" : "cancelled"}`}>{profile.enabled ? "已启用" : "已禁用"}</span>
       </header>
       <dl className="provider-details">
         <div><dt>默认模型</dt><dd>{profile.default_model || "未设置"}</dd></div>
-        <div><dt>{profile.external ? "API 地址" : "本地地址 / 路径"}</dt><dd title={profile.base_url || undefined}>{profile.base_url || "使用应用内置运行时"}</dd></div>
         <div><dt>最近测试</dt><dd>{testedAt}</dd></div>
       </dl>
-      <div className="capability-list">{profile.capabilities.length ? profile.capabilities.map((item) => <span key={item}>{item}</span>) : <span>未声明能力</span>}</div>
       <div className="provider-meta">
         <span>{profile.external ? "外部 · 每次需授权" : "本地"}</span>
         <span>{profile.external ? (profile.credential_configured ? "密钥可用" : "密钥未配置") : "无需密钥"}</span>
         {customHeaderCount ? <span>{customHeaderCount} 个自定义请求头</span> : null}
         {usedBy.length ? <span>默认：{usedBy.join(" / ")}</span> : null}
       </div>
+      <details className="advanced-settings compact"><summary>查看高级信息</summary><dl className="provider-details"><div><dt>接入方式</dt><dd>{profile.adapter}</dd></div><div><dt>{profile.external ? "API 地址" : "本地地址 / 路径"}</dt><dd title={profile.base_url || undefined}>{profile.base_url || "使用应用内置运行时"}</dd></div></dl><div className="capability-list">{profile.capabilities.length ? profile.capabilities.map((item) => <span key={item}>{item}</span>) : <span>未声明能力</span>}</div></details>
       {profile.last_test_message ? <p className={profile.last_test_status === "succeeded" ? "test-message success" : "test-message error"}>{profile.last_test_message}</p> : null}
       <footer><span>{statusLabel(profile.implementation_status)}</span><button className="button ghost" disabled={busy} onClick={onTest}>{busy ? "测试中…" : "测试连接"}</button></footer>
       <small className="provider-test-note">{profile.external ? "按供应商定价；测试会发送最小合成请求，不发送课程内容，可能产生极少量费用。系统不会静默切换到其他外部服务。" : "数据留在本机或私网，不产生外部 API 调用费用。"}</small>
@@ -482,7 +493,112 @@ function localModelStatus(model: LocalModel) {
 
 function ScheduleSettings({ connection }: { connection: ScheduleConnection | null }) { return <section className="settings-section"><div className="section-heading"><div><span className="eyebrow">ZJSU UNDERGRADUATE V-9.0</span><h2>浙江工商大学本科教务</h2></div><Link className="button primary" href="/schedule">打开课表工作台</Link></div><article className="panel connection-card"><div className="connection-hero"><span className={`connection-orb state-${connection?.state ?? "disconnected"}`} /><span><strong>{connection?.display_name ?? "尚未初始化"}</strong><small>{connection?.base_url ?? "https://jwxt.zjgsu.edu.cn/jwglxt"}</small></span></div><dl><div><dt>连接状态</dt><dd>{connection?.state ?? "disconnected"}</dd></div><div><dt>同步间隔</dt><dd>{connection?.sync_interval_minutes ?? 360} 分钟</dd></div><div><dt>会话保留</dt><dd>仅加密 Cookie / Session，不保存账号密码</dd></div><div><dt>实时登录</dt><dd>{connection?.capability.live_login ? "已验证" : "等待授权 HAR / 测试账号"}</dd></div></dl><p>{connection?.capability.reason}</p></article></section>; }
 
-function PrivacySettings({ encryption, storage }: { encryption: boolean; storage?: string }) { return <section className="settings-section privacy-grid"><article className="panel"><span className="privacy-icon">▣</span><h2>原始文件优先保存</h2><p>转写、匹配或 Provider 失败都不会删除原始媒体。当前存储：{storage ?? "local"}。</p><span className="badge accepted">默认开启</span></article><article className="panel"><span className="privacy-icon">⌁</span><h2>逐次外发授权</h2><p>确认框列出实际 Vendor、模型、资源和数据类型；取消只会保留为“未转写”。</p><span className="badge accepted">强制执行</span></article><article className="panel"><span className="privacy-icon">⌘</span><h2>密钥不明文落库</h2><p>{encryption ? "已配置后端加密主密钥，可以加密保存 Profile 密钥。" : "尚未配置加密主密钥，只允许 env:VARIABLE 引用。"}</p><span className={`badge ${encryption ? "accepted" : "scheduled"}`}>{encryption ? "已加密" : "环境引用模式"}</span></article></section>; }
+function StorageAndDiagnostics({ application, encryption, storage, onError }: { application: ApplicationSettings | null; encryption: boolean; storage?: string; onError: (message: string) => void }) {
+  const [snapshot, setSnapshot] = useState<StorageMaintenanceSnapshot | null>(null);
+  const [preview, setPreview] = useState<StorageCleanupPreview | null>(null);
+  const [busy, setBusy] = useState("");
+  const [message, setMessage] = useState("");
+  const [retention, setRetention] = useState(String(application?.recording_chunk_retention_days ?? "permanent"));
+
+  const refreshStorage = useCallback(async () => {
+    setBusy("refresh");
+    onError("");
+    try {
+      setSnapshot(await mutate<StorageMaintenanceSnapshot>("/maintenance/storage?refresh=true", { method: "GET" }));
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : "存储统计刷新失败");
+    } finally { setBusy(""); }
+  }, [onError]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void refreshStorage(); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [refreshStorage]); // 仅进入本页时显式扫描。
+
+  async function saveRetention() {
+    setBusy("retention");
+    onError("");
+    try {
+      await mutate<ApplicationSettings>("/settings/application", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recording_chunk_retention_days: retention === "permanent" ? null : Number(retention) }),
+      });
+      setMessage("保留时间已保存。已有录音不会因更改设置而立即被删除。");
+      await refreshStorage();
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : "保留时间保存失败");
+    } finally { setBusy(""); }
+  }
+
+  async function prepareCleanup() {
+    setBusy("preview");
+    onError("");
+    setMessage("");
+    try {
+      const result = await mutate<StorageCleanupPreview>("/maintenance/storage/preview", { method: "POST" });
+      if (!result.recording_count) {
+        setMessage("现在没有可安全清理的录音分片。未完成、校验失败或仍在保留期内的分片都会继续保留。");
+      } else {
+        setPreview(result);
+      }
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : "清理预览失败");
+    } finally { setBusy(""); }
+  }
+
+  async function confirmCleanup() {
+    if (!preview) return;
+    setBusy("cleanup");
+    onError("");
+    try {
+      const result = await mutate<StorageCleanupResult>("/maintenance/storage/cleanup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ preview_id: preview.preview_id, confirmed: true }),
+      });
+      setMessage(`已清理 ${result.cleaned_recordings} 条录音的原始分片，释放 ${formatBytes(result.reclaimed_bytes)}${result.failures.length ? `；${result.failures.length} 条未完成登记，将在下次清理时继续恢复` : ""}。`);
+      setPreview(null);
+      await refreshStorage();
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : "清理失败");
+    } finally { setBusy(""); }
+  }
+
+  async function exportDiagnostics() {
+    setBusy("diagnostics");
+    onError("");
+    try {
+      const response = await fetch(`${publicApiUrl}/maintenance/diagnostics/export`, { method: "POST" });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { detail?: string };
+        throw new Error(body.detail ?? `生成失败 (${response.status})`);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `KnowledgeDebt-diagnostics-${new Date().toISOString().slice(0, 10)}.zip`;
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setMessage("诊断包已下载到本机，应用没有自动上传。");
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : "诊断包生成失败");
+    } finally { setBusy(""); }
+  }
+
+  return <section className="settings-section" id="privacy">
+    <div className="section-heading"><div><span className="eyebrow">LOCAL STORAGE</span><h2>本地空间管理</h2><p>只在进入本页或点击刷新时统计磁盘，不会影响日常页面速度。</p></div><button className="button secondary" disabled={Boolean(busy)} onClick={refreshStorage}>{busy === "refresh" ? "统计中…" : "刷新占用"}</button></div>
+    <div className="storage-layout">
+      <article className="panel storage-policy"><h3>录音原始分片保留时间</h3><p>只有录音已完成、最终音频可读且通过完整性校验后，才会进入保留期。转写和课堂资料不会删除。</p><label>保留时间<select aria-label="录音原始分片保留时间" onChange={(event) => setRetention(event.target.value)} value={retention}><option value="7">7 天</option><option value="14">14 天（推荐）</option><option value="30">30 天</option><option value="permanent">永久保留</option></select></label><button className="button secondary" disabled={Boolean(busy)} onClick={saveRetention}>{busy === "retention" ? "保存中…" : "保存保留时间"}</button></article>
+      <article className="panel storage-summary"><h3>当前本地占用</h3>{snapshot?.categories.length ? <div className="storage-categories">{snapshot.categories.map((category) => <div key={category.key}><span><strong>{category.label}</strong><small>{category.files} 个文件{category.truncated ? " · 统计已达上限" : ""}</small></span><b>{formatBytes(category.bytes)}</b></div>)}</div> : <p className="muted">{busy === "refresh" ? "正在统计…" : "暂无占用数据，点击“刷新占用”后显示。"}</p>}<div className="cleanup-summary"><strong>{snapshot?.cleanup.eligible_recordings ?? 0} 条录音可清理</strong><span>预计可释放 {formatBytes(snapshot?.cleanup.eligible_bytes ?? 0)}</span><small>{snapshot?.cleanup.protected_recordings ?? 0} 条录音的分片受保护</small></div><button className="button danger" disabled={Boolean(busy) || !(snapshot?.cleanup.eligible_recordings)} onClick={prepareCleanup}>{busy === "preview" ? "正在预览…" : "预览并清理分片"}</button></article>
+    </div>
+    <article className="panel diagnostic-card"><div><span className="eyebrow">LOCAL DIAGNOSTICS</span><h2>下载诊断包</h2><p><strong>只会下载到本机，绝不自动上传。</strong>包含应用与系统版本、数据库升级版本、组件状态、不敏感的服务标识、任务状态和经过脱敏且截断的运行日志。</p><p>明确不包含：数据库、课表、转写文本、音频、课程文档、笔记和密钥。</p></div><button className="button primary" disabled={Boolean(busy)} onClick={exportDiagnostics}>{busy === "diagnostics" ? "生成中…" : "生成并下载"}</button></article>
+    <div className="privacy-grid compact-grid"><article className="panel"><span className="privacy-icon">▣</span><h2>原始文件优先保存</h2><p>失败或未完成的录音永远不会自动清理。当前存储：{storage ?? "local"}。</p></article><article className="panel"><span className="privacy-icon">⌁</span><h2>逐次外发授权</h2><p>取消外发只会保留为“未转写”，不影响原始媒体。</p></article><article className="panel"><span className="privacy-icon">⌘</span><h2>密钥不明文落库</h2><p>{encryption ? "已配置加密主密钥。" : "尚未配置加密主密钥，只允许环境变量引用。"}</p></article></div>
+    {message ? <div className="notice success" aria-live="polite">{message}</div> : null}
+    {preview ? <div className="modal-backdrop" role="presentation"><div aria-labelledby="cleanup-confirm-title" aria-modal="true" className="consent-modal panel" role="dialog"><span className="eyebrow">CONFIRM CLEANUP</span><h2 id="cleanup-confirm-title">确认清理录音原始分片</h2><p>已重新校验最终音频。本次将清理 <strong>{preview.recording_count}</strong> 条录音的分片，预计释放 <strong>{formatBytes(preview.bytes)}</strong>。最终录音、转写和 Session 不会删除。</p><div className="modal-actions"><button className="button secondary" onClick={() => setPreview(null)}>返回</button><button className="button danger" disabled={busy === "cleanup"} onClick={confirmCleanup}>{busy === "cleanup" ? "清理中…" : "确认清理"}</button></div></div></div> : null}
+  </section>;
+}
 
 function UsageSettings({ usage }: { usage: ProviderUsage | null }) { return <section className="settings-section"><div className="metric-grid four"><article className="metric-card"><span>本月调用</span><strong>{usage?.request_count ?? 0}</strong><small>所有 Provider 请求</small></article><article className="metric-card"><span>转写分钟</span><strong>{usage?.transcription_minutes ?? 0}</strong><small>按保留媒体时长统计</small></article><article className="metric-card"><span>已知费用</span><strong>¥{usage?.known_cost ?? 0}</strong><small>没有价格则不猜测</small></article><article className="metric-card"><span>失败调用</span><strong>{usage?.failure_count ?? 0}</strong><small>可按任务回溯</small></article></div><article className="panel usage-table"><div className="section-heading"><div><span className="eyebrow">CALL LEDGER</span><h2>调用台账</h2></div><span className="badge">{usage?.month ?? "本月"}</span></div>{usage?.items.length ? usage.items.map((item) => <div className="usage-row" key={item.id}><span><strong>{item.operation}</strong><small>{item.provider_name} · {item.model ?? "未记录模型"}</small></span><span>{item.audio_minutes ? `${item.audio_minutes.toFixed(1)} 分钟` : "—"}</span><span>{item.cost_known ? `${item.estimated_cost}` : "费用未知"}</span><span className={`badge ${item.status === "succeeded" ? "accepted" : "cancelled"}`}>{item.status}</span></div>) : <p className="muted">尚无外部调用记录。默认开发与测试不会消耗付费 API。</p>}</article></section>; }
 

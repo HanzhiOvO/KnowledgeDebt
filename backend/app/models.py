@@ -278,6 +278,7 @@ class ReviewDecision(BaseModel):
 class AppSettingsUpdate(BaseModel):
     timezone: str | None = Field(default=None, min_length=1, max_length=120)
     auto_transcribe: bool | None = None
+    recording_chunk_retention_days: int | None = None
 
     @field_validator("timezone")
     @classmethod
@@ -288,6 +289,13 @@ class AppSettingsUpdate(BaseModel):
             ZoneInfo(value)
         except ZoneInfoNotFoundError as exc:
             raise ValueError("时区必须是有效的 IANA 时区，例如 Asia/Shanghai。") from exc
+        return value
+
+    @field_validator("recording_chunk_retention_days")
+    @classmethod
+    def validate_recording_retention(cls, value: int | None) -> int | None:
+        if value is not None and value not in {7, 14, 30}:
+            raise ValueError("录音分片保留时间只支持 7、14、30 天或永久保留。")
         return value
 
 

@@ -274,6 +274,7 @@ echo "冻结 FastAPI 后端"
   --collect-all fitz \
   --collect-all pymupdf \
   --collect-all uvicorn \
+  --hidden-import app.orm \
   "$KD_MAC_ROOT/packaging/macos/backend_entry.py"
 
 echo "构建 Next.js standalone"

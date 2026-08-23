@@ -202,6 +202,7 @@ class ScheduleOccurrenceORM(Base):
     teacher: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str] = mapped_column(Text, default="")
     external_id: Mapped[str] = mapped_column(Text)
+    adjustment_external_id: Mapped[str | None] = mapped_column(Text)
     adjustment_of_id: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[str] = mapped_column(Text)
     updated_at: Mapped[str] = mapped_column(Text)

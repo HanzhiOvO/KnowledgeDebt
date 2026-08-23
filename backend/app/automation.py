@@ -33,8 +33,9 @@ class AutomationRepository:
         with self.db.connect() as conn:
             conn.execute(
                 """INSERT INTO app_settings
-                   (id, timezone, auto_transcribe, created_at, updated_at)
-                   VALUES ('default', ?, ?, ?, ?)
+                   (id, timezone, auto_transcribe, recording_chunk_retention_days,
+                    created_at, updated_at)
+                   VALUES ('default', ?, ?, 14, ?, ?)
                    ON CONFLICT(id) DO NOTHING""",
                 (default_timezone, int(default_auto_transcribe), now, now),
             )
@@ -45,18 +46,28 @@ class AutomationRepository:
         current = self.get_app_settings()
         timezone = values.get("timezone", current["timezone"])
         auto_transcribe = values.get("auto_transcribe", current["auto_transcribe"])
+        retention = (
+            values["recording_chunk_retention_days"]
+            if "recording_chunk_retention_days" in values
+            else current["recording_chunk_retention_days"]
+        )
         with self.db.connect() as conn:
             conn.execute(
-                """UPDATE app_settings SET timezone=?, auto_transcribe=?, updated_at=?
+                """UPDATE app_settings SET timezone=?, auto_transcribe=?,
+                   recording_chunk_retention_days=?, updated_at=?
                    WHERE id='default'""",
-                (timezone, int(auto_transcribe), utc_now()),
+                (timezone, int(auto_transcribe), retention, utc_now()),
             )
         updated = self.get_app_settings()
         self.audit(
             "update_app_settings",
             "app_settings",
             "default",
-            {"timezone": updated["timezone"], "auto_transcribe": updated["auto_transcribe"]},
+            {
+                "timezone": updated["timezone"],
+                "auto_transcribe": updated["auto_transcribe"],
+                "recording_chunk_retention_days": updated["recording_chunk_retention_days"],
+            },
         )
         return updated
 
@@ -342,9 +353,10 @@ class AutomationRepository:
             with self.db.connect() as conn:
                 rows = conn.execute(
                     """SELECT o.*, r.external_id AS rule_external_id, r.course_name,
-                              sa.session_id
+                              parent.external_id AS adjustment_of_external_id, sa.session_id
                        FROM schedule_occurrences o
                        JOIN schedule_rules r ON r.id=o.rule_id
+                       LEFT JOIN schedule_occurrences parent ON parent.id=o.adjustment_of_id
                        LEFT JOIN session_automation sa ON sa.occurrence_id=o.id
                        WHERE r.term_id=? AND o.source=? AND o.sync_status='active'""",
                     (term["id"], source),
@@ -362,9 +374,10 @@ class AutomationRepository:
                     # and only on the first confirmed authoritative snapshot for this term.
                     legacy_rows = conn.execute(
                         """SELECT o.*, r.external_id AS rule_external_id, r.course_name,
-                                  sa.session_id
+                                  parent.external_id AS adjustment_of_external_id, sa.session_id
                            FROM schedule_occurrences o
                            JOIN schedule_rules r ON r.id=o.rule_id
+                           LEFT JOIN schedule_occurrences parent ON parent.id=o.adjustment_of_id
                            LEFT JOIN session_automation sa ON sa.occurrence_id=o.id
                            WHERE r.term_id=? AND r.source='manual' AND o.source='manual'
                              AND o.sync_status='active' AND o.source_kind='regular'
@@ -391,6 +404,8 @@ class AutomationRepository:
             "room",
             "teacher",
             "notes",
+            "adjustment_external_id",
+            "adjustment_of_external_id",
             "rule_external_id",
         )
         added: list[dict[str, Any]] = []
@@ -640,6 +655,7 @@ class AutomationRepository:
                     changed_rows += 1
                     if fail_after is not None and changed_rows >= fail_after:
                         raise RuntimeError("simulated schedule sync interruption")
+                occurrence_ids: dict[str, str] = {}
                 for occurrence in parsed["occurrences"]:
                     rule_id = rules[occurrence["rule_external_id"]]
                     existing_occurrence = conn.execute(
@@ -647,19 +663,38 @@ class AutomationRepository:
                            WHERE rule_id=? AND external_id=?""",
                         (rule_id, occurrence["external_id"]),
                     ).fetchone()
-                    occurrence_id = existing_occurrence["id"] if existing_occurrence else _id()
+                    occurrence_ids[occurrence["external_id"]] = (
+                        existing_occurrence["id"] if existing_occurrence else _id()
+                    )
+                for occurrence in parsed["occurrences"]:
+                    rule_id = rules[occurrence["rule_external_id"]]
+                    occurrence_id = occurrence_ids[occurrence["external_id"]]
+                    adjustment_of_external_id = occurrence.get("adjustment_of_external_id")
+                    adjustment_of_id = (
+                        occurrence_ids.get(adjustment_of_external_id)
+                        if adjustment_of_external_id
+                        else None
+                    )
+                    if adjustment_of_external_id and not adjustment_of_id:
+                        raise ValueError(
+                            f"调课实例引用了未知原课次：{adjustment_of_external_id}"
+                        )
                     conn.execute(
                         """INSERT INTO schedule_occurrences
                            (id, rule_id, occurrence_date, starts_at, ends_at, status, source_kind,
-                            campus, building, room, teacher, notes, external_id, source,
-                            last_seen_batch_id, sync_status, created_at, updated_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                            campus, building, room, teacher, notes, external_id,
+                            adjustment_external_id, adjustment_of_id, source, last_seen_batch_id,
+                            sync_status, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                   'active', ?, ?)
                            ON CONFLICT(rule_id, external_id) DO UPDATE SET
                              occurrence_date=excluded.occurrence_date, starts_at=excluded.starts_at,
                              ends_at=excluded.ends_at, status=excluded.status,
                              source_kind=excluded.source_kind, campus=excluded.campus,
                              building=excluded.building, room=excluded.room,
                              teacher=excluded.teacher, notes=excluded.notes,
+                             adjustment_external_id=excluded.adjustment_external_id,
+                             adjustment_of_id=excluded.adjustment_of_id,
                              source=excluded.source, last_seen_batch_id=excluded.last_seen_batch_id,
                              sync_status='active', updated_at=excluded.updated_at""",
                         (
@@ -676,6 +711,8 @@ class AutomationRepository:
                             occurrence.get("teacher"),
                             occurrence.get("notes", ""),
                             occurrence["external_id"],
+                            occurrence.get("adjustment_external_id"),
+                            adjustment_of_id,
                             batch["source"],
                             batch_id,
                             timestamp,
@@ -794,14 +831,16 @@ class AutomationRepository:
             conn.execute(
                 """INSERT INTO schedule_occurrences
                    (id, rule_id, course_id, occurrence_date, starts_at, ends_at, status, source_kind,
-                    campus, building, room, teacher, notes, external_id, adjustment_of_id, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    campus, building, room, teacher, notes, external_id, adjustment_external_id,
+                    adjustment_of_id, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(rule_id, external_id) DO UPDATE SET
                      course_id=excluded.course_id, occurrence_date=excluded.occurrence_date,
                      starts_at=excluded.starts_at, ends_at=excluded.ends_at,
                      status=excluded.status, source_kind=excluded.source_kind,
                      campus=excluded.campus, building=excluded.building, room=excluded.room,
                      teacher=excluded.teacher, notes=excluded.notes, external_id=excluded.external_id,
+                     adjustment_external_id=excluded.adjustment_external_id,
                      adjustment_of_id=excluded.adjustment_of_id, updated_at=excluded.updated_at""",
                 (
                     occurrence_id,
@@ -818,6 +857,7 @@ class AutomationRepository:
                     values.get("teacher", rule.get("teacher")),
                     values.get("notes", rule.get("notes", "")),
                     values["external_id"],
+                    values.get("adjustment_external_id"),
                     values.get("adjustment_of_id"),
                     now,
                     now,
@@ -1303,6 +1343,211 @@ class AutomationRepository:
             )
         with self.db.connect() as conn:
             updated = conn.execute("SELECT * FROM review_items WHERE id=?", (review_id,)).fetchone()
+        return _decode(updated)  # type: ignore[return-value]
+
+    def apply_review_decision(
+        self,
+        review_id: str,
+        action: str,
+        *,
+        edited_value: str | None = None,
+        reason: str = "",
+        snoozed_until: str | None = None,
+        fail_after_side_effect: bool = False,
+    ) -> dict[str, Any]:
+        """Apply a review decision and its domain side effect in one transaction.
+
+        ``fail_after_side_effect`` is an intentional test seam proving that neither
+        the resource/title change nor audit rows survive a mid-decision failure.
+        """
+
+        target = {
+            "accept": "accepted",
+            "edit_accept": "accepted",
+            "reject": "rejected",
+            "later": "later",
+            "pending": "pending",
+        }[action]
+        with self.db.connect(immediate=True) as conn:
+            # PostgreSQL obtains a row lock; SQLite serializes writers via BEGIN IMMEDIATE.
+            conn.execute("UPDATE review_items SET updated_at=updated_at WHERE id=?", (review_id,))
+            row = conn.execute("SELECT * FROM review_items WHERE id=?", (review_id,)).fetchone()
+            if not row:
+                raise KeyError("review item")
+            current = _decode(row)
+            if current["status"] in {"accepted", "rejected"}:
+                return current  # type: ignore[return-value]
+            if current["status"] == target and (
+                target != "later" or current.get("snoozed_until") == snoozed_until
+            ):
+                return current  # type: ignore[return-value]
+
+            timestamp = utc_now()
+            if action in {"accept", "edit_accept"}:
+                value = edited_value or current.get("proposed_value")
+                if current["kind"] == "archive_match":
+                    if not value:
+                        raise ValueError("请先选择 Session")
+                    conn.execute(
+                        "UPDATE inbox_items SET updated_at=updated_at WHERE id=?",
+                        (current["subject_id"],),
+                    )
+                    item = conn.execute(
+                        "SELECT * FROM inbox_items WHERE id=?", (current["subject_id"],)
+                    ).fetchone()
+                    if not item:
+                        raise KeyError("inbox item")
+                    created_resource = False
+                    if item["adopted_resource_id"]:
+                        resource_id = item["adopted_resource_id"]
+                        adopted = conn.execute(
+                            "SELECT session_id FROM resources WHERE id=?", (resource_id,)
+                        ).fetchone()
+                        if not adopted:
+                            raise KeyError("resource")
+                        if adopted["session_id"] != value:
+                            raise ValueError("该资料已被归档到另一个 Session，请刷新后确认。")
+                    else:
+                        if not conn.execute(
+                            "SELECT 1 FROM sessions WHERE id=?", (value,)
+                        ).fetchone():
+                            raise KeyError("session")
+                        resource_id = _id()
+                        conn.execute(
+                            """INSERT INTO resources
+                               (id, session_id, type, evidence_level, name, mime_type, local_path,
+                                storage_provider, storage_key, extracted_text, capture_range_json,
+                                upload_state, created_at, updated_at)
+                               VALUES (?, ?, ?, 'classroom', ?, ?, ?, ?, ?, ?, '[]',
+                                       'local_only', ?, ?)""",
+                            (
+                                resource_id,
+                                value,
+                                item["type"],
+                                item["name"],
+                                item["mime_type"],
+                                item["local_path"],
+                                item["storage_provider"],
+                                item["storage_key"],
+                                item["extracted_text"] or "",
+                                timestamp,
+                                timestamp,
+                            ),
+                        )
+                        created_resource = True
+                    conn.execute(
+                        """UPDATE inbox_items SET matching_status='accepted', adopted_resource_id=?,
+                           suggested_session_id=?, locked=1, archived=1, updated_at=? WHERE id=?""",
+                        (resource_id, value, timestamp, current["subject_id"]),
+                    )
+                    conn.execute(
+                        """INSERT INTO resource_automation
+                           (resource_id, transcription_state, auto_transcribe, created_at, updated_at)
+                           VALUES (?, 'saved', 1, ?, ?)
+                           ON CONFLICT(resource_id) DO UPDATE SET updated_at=excluded.updated_at""",
+                        (resource_id, timestamp, timestamp),
+                    )
+                    if created_resource:
+                        conn.execute(
+                            "INSERT INTO audit_log VALUES (?, ?, ?, ?, ?, ?)",
+                            (
+                                _id(),
+                                "adopt_inbox_item",
+                                "inbox_item",
+                                current["subject_id"],
+                                json.dumps({"session_id": value}, ensure_ascii=False),
+                                timestamp,
+                            ),
+                        )
+                elif current["kind"] == "session_topic":
+                    if not value or not str(value).strip():
+                        raise ValueError("主题标题不能为空")
+                    session = conn.execute(
+                        "SELECT 1 FROM sessions WHERE id=?", (current["subject_id"],)
+                    ).fetchone()
+                    if not session:
+                        raise KeyError("session")
+                    conn.execute(
+                        """INSERT INTO session_automation (session_id, created_at, updated_at)
+                           VALUES (?, ?, ?) ON CONFLICT(session_id) DO NOTHING""",
+                        (current["subject_id"], timestamp, timestamp),
+                    )
+                    title_state = conn.execute(
+                        "SELECT title_locked FROM session_automation WHERE session_id=?",
+                        (current["subject_id"],),
+                    ).fetchone()
+                    should_update = action == "edit_accept" or not title_state["title_locked"]
+                    if should_update:
+                        source = "user_review" if action == "edit_accept" else "transcript_rule"
+                        confidence = 1 if action == "edit_accept" else current["confidence"]
+                        conn.execute(
+                            "UPDATE sessions SET title=?, updated_at=? WHERE id=?",
+                            (str(value).strip(), timestamp, current["subject_id"]),
+                        )
+                        conn.execute(
+                            """UPDATE session_automation SET title_source=?, title_confidence=?,
+                               title_locked=?, topic_candidate=?, updated_at=? WHERE session_id=?""",
+                            (
+                                source,
+                                confidence,
+                                int(action == "edit_accept"),
+                                str(value).strip(),
+                                timestamp,
+                                current["subject_id"],
+                            ),
+                        )
+                        conn.execute(
+                            "INSERT INTO audit_log VALUES (?, ?, ?, ?, ?, ?)",
+                            (
+                                _id(),
+                                "update_session_title",
+                                "session",
+                                current["subject_id"],
+                                json.dumps(
+                                    {"source": source, "confidence": confidence},
+                                    ensure_ascii=False,
+                                ),
+                                timestamp,
+                            ),
+                        )
+            if fail_after_side_effect:
+                raise RuntimeError("simulated review side-effect interruption")
+
+            conn.execute(
+                """UPDATE review_items SET status=?, decision_reason=?, decided_at=?,
+                   snoozed_until=?, updated_at=? WHERE id=?""",
+                (
+                    target,
+                    reason,
+                    None if target in {"pending", "later"} else timestamp,
+                    snoozed_until if target == "later" else None,
+                    timestamp,
+                    review_id,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO audit_log VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    _id(),
+                    "review_decision",
+                    "review_item",
+                    review_id,
+                    json.dumps(
+                        {
+                            "action": action,
+                            "from_status": current["status"],
+                            "to_status": target,
+                            "reason": reason,
+                            "snoozed_until": snoozed_until,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    timestamp,
+                ),
+            )
+            updated = conn.execute(
+                "SELECT * FROM review_items WHERE id=?", (review_id,)
+            ).fetchone()
         return _decode(updated)  # type: ignore[return-value]
 
     def session_automation(self, session_id: str) -> dict[str, Any]:

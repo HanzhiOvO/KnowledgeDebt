@@ -85,8 +85,31 @@ class ZJSUFixtureParser:
             rule = self._parse_course(item, index)
             parsed_rules.append(rule)
             parsed_occurrences.extend(self._occurrences(term, rule, period_times))
-        for adjustment in payload.get("adjustments", []):
-            parsed_occurrences.append(self._parse_adjustment(adjustment, period_times))
+        for index, adjustment in enumerate(payload.get("adjustments", [])):
+            parsed = self._parse_adjustment(
+                adjustment,
+                period_times,
+                term.get("timezone", "Asia/Shanghai"),
+            )
+            self._apply_adjustment(parsed_occurrences, parsed, index)
+        identities: set[tuple[str, str]] = set()
+        time_slots: set[tuple[str, str, str, str]] = set()
+        for occurrence in parsed_occurrences:
+            identity = (occurrence["rule_external_id"], occurrence["external_id"])
+            slot = (
+                occurrence["rule_external_id"],
+                occurrence["occurrence_date"],
+                occurrence["starts_at"],
+                occurrence["ends_at"],
+            )
+            if identity in identities:
+                raise ValueError(f"课表实例 external_id 重复：{occurrence['external_id']}")
+            if slot in time_slots:
+                raise ValueError(
+                    "同一课程规则在同一日期和时段产生了多个有效课次；请检查调停课来源数据。"
+                )
+            identities.add(identity)
+            time_slots.add(slot)
         return {"term": term, "rules": parsed_rules, "occurrences": parsed_occurrences}
 
     def _parse_course(self, item: dict[str, Any], index: int) -> dict[str, Any]:
@@ -145,6 +168,11 @@ class ZJSUFixtureParser:
                     "ends_at": ends.isoformat(),
                     "status": "scheduled",
                     "source_kind": "regular",
+                    "campus": rule.get("campus"),
+                    "building": rule.get("building"),
+                    "room": rule.get("room"),
+                    "teacher": rule.get("teacher"),
+                    "notes": rule.get("notes", ""),
                     "rule_external_id": rule["external_id"],
                     # 节次变化仍代表同一门课的同一天课堂；稳定 ID 让快照把它识别为修改而非删除+新增。
                     "external_id": f"{rule['external_id']}:{day.isoformat()}",
@@ -153,7 +181,10 @@ class ZJSUFixtureParser:
         return occurrences
 
     def _parse_adjustment(
-        self, item: dict[str, Any], period_times: dict[int, tuple[str, str]]
+        self,
+        item: dict[str, Any],
+        period_times: dict[int, tuple[str, str]],
+        default_timezone: str,
     ) -> dict[str, Any]:
         for key in ("rule_external_id", "date", "external_id"):
             if not item.get(key):
@@ -164,11 +195,11 @@ class ZJSUFixtureParser:
             raise ValueError("调课记录的 status 或 source_kind 无效。")
         start_period = int(item.get("start_period", 1))
         end_period = int(item.get("end_period", start_period))
-        timezone = ZoneInfo(item.get("timezone", "Asia/Shanghai"))
+        timezone = ZoneInfo(item.get("timezone", default_timezone))
         day = date.fromisoformat(item["date"])
         starts = datetime.combine(day, self._clock(period_times, start_period, 0), timezone)
         ends = datetime.combine(day, self._clock(period_times, end_period, 1), timezone)
-        return {
+        result = {
             "rule_external_id": item["rule_external_id"],
             "occurrence_date": day.isoformat(),
             "starts_at": starts.isoformat(),
@@ -181,6 +212,137 @@ class ZJSUFixtureParser:
             "teacher": item.get("teacher"),
             "notes": item.get("notes", ""),
             "external_id": item["external_id"],
+            "adjustment_external_id": item["external_id"],
+            "adjustment_of_external_id": item.get("adjustment_of_external_id"),
+        }
+        original_date = item.get("original_date")
+        if original_date:
+            original_day = date.fromisoformat(original_date)
+            original_start_period = int(item.get("original_start_period", start_period))
+            original_end_period = int(item.get("original_end_period", end_period))
+            result["original_occurrence_date"] = original_day.isoformat()
+            result["original_starts_at"] = datetime.combine(
+                original_day,
+                self._clock(period_times, original_start_period, 0),
+                timezone,
+            ).isoformat()
+            result["original_ends_at"] = datetime.combine(
+                original_day,
+                self._clock(period_times, original_end_period, 1),
+                timezone,
+            ).isoformat()
+        return result
+
+    @classmethod
+    def _apply_adjustment(
+        cls,
+        occurrences: list[dict[str, Any]],
+        adjustment: dict[str, Any],
+        index: int,
+    ) -> None:
+        """Fold source adjustments into one conflict-free effective occurrence snapshot.
+
+        A cancellation annotates the stable regular occurrence instead of adding a
+        duplicate row. A moved lesson keeps the cancelled original and adds a linked
+        target. A makeup lesson is an independent extra occurrence.
+        """
+
+        if adjustment["source_kind"] == "makeup":
+            occurrences.append(cls._public_adjustment_fields(adjustment))
+            return
+
+        original = cls._find_adjusted_occurrence(occurrences, adjustment)
+        if adjustment["status"] == "cancelled":
+            if original is None:
+                occurrences.append(cls._public_adjustment_fields(adjustment))
+                return
+            replacement = cls._overlay_original(original, adjustment, status="cancelled")
+            occurrences[occurrences.index(original)] = replacement
+            return
+
+        if original is None:
+            raise ValueError(
+                f"adjustments[{index}] 是调课，但没有通过原日期/节次或 adjustment_of_external_id "
+                "定位被调整的原课次。"
+            )
+        same_slot = all(
+            original[key] == adjustment[key]
+            for key in ("occurrence_date", "starts_at", "ends_at")
+        )
+        if same_slot:
+            occurrences[occurrences.index(original)] = cls._overlay_original(
+                original,
+                adjustment,
+                status="scheduled",
+            )
+            return
+        occurrences[occurrences.index(original)] = cls._overlay_original(
+            original,
+            adjustment,
+            status="cancelled",
+        )
+        target = cls._public_adjustment_fields(adjustment)
+        target["adjustment_of_external_id"] = original["external_id"]
+        occurrences.append(target)
+
+    @staticmethod
+    def _find_adjusted_occurrence(
+        occurrences: list[dict[str, Any]], adjustment: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        candidates = [
+            item
+            for item in occurrences
+            if item["rule_external_id"] == adjustment["rule_external_id"]
+        ]
+        explicit = adjustment.get("adjustment_of_external_id")
+        if explicit:
+            return next((item for item in candidates if item["external_id"] == explicit), None)
+        if adjustment.get("original_occurrence_date"):
+            return next(
+                (
+                    item
+                    for item in candidates
+                    if item["occurrence_date"] == adjustment["original_occurrence_date"]
+                    and item["starts_at"] == adjustment["original_starts_at"]
+                    and item["ends_at"] == adjustment["original_ends_at"]
+                ),
+                None,
+            )
+        return next(
+            (
+                item
+                for item in candidates
+                if item["occurrence_date"] == adjustment["occurrence_date"]
+                and item["starts_at"] == adjustment["starts_at"]
+                and item["ends_at"] == adjustment["ends_at"]
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _overlay_original(
+        original: dict[str, Any], adjustment: dict[str, Any], *, status: str
+    ) -> dict[str, Any]:
+        result = {
+            **original,
+            "status": status,
+            "source_kind": "adjustment",
+            "adjustment_external_id": adjustment["external_id"],
+        }
+        if status == "scheduled":
+            for key in ("campus", "building", "room", "teacher"):
+                if adjustment.get(key) is not None:
+                    result[key] = adjustment[key]
+        if adjustment.get("notes"):
+            result["notes"] = adjustment["notes"]
+        return result
+
+    @staticmethod
+    def _public_adjustment_fields(adjustment: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in adjustment.items()
+            if not key.startswith("original_")
         }
 
     @classmethod

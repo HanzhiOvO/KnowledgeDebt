@@ -15,10 +15,12 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from .automation import AutomationRepository, parse_iso
 from .config import Settings
 from .database import Database
+from .diagnostics import DiagnosticExporter
 from .documents import extract_document
 from .local_models import (
     LocalModelConflict,
@@ -26,6 +28,7 @@ from .local_models import (
     LocalModelManager,
     LocalModelNotInstalled,
 )
+from .maintenance import StorageMaintenance
 from .models import (
     AcademicTermCreate,
     AnalysisRequest,
@@ -108,6 +111,11 @@ class RetrievalRequest(BaseModel):
     query: str = Field(min_length=1, max_length=1000)
     policy: RetrievalPolicy = RetrievalPolicy.RECONSTRUCTION
     limit: int = Field(default=12, ge=1, le=50)
+
+
+class StorageCleanupRequest(BaseModel):
+    preview_id: str = Field(min_length=32, max_length=32, pattern=r"^[a-f0-9]+$")
+    confirmed: bool = False
 
 
 def _safe_name(name: str) -> str:
@@ -263,6 +271,10 @@ def create_app(
         ffmpeg_path=settings.ffmpeg_path,
         assembler=recording_assembler,
     )
+    maintenance = StorageMaintenance(database, automation, recordings, settings.data_dir)
+    diagnostics = DiagnosticExporter(
+        database, automation, settings.data_dir, app_version=settings.app_version
+    )
     zjsu_connector = ZJSUConnector()
     zjsu_parser = ZJSUFixtureParser()
 
@@ -284,7 +296,7 @@ def create_app(
 
     app = FastAPI(
         title="知债 KnowledgeDebt API",
-        version="0.2.0",
+        version=settings.app_version,
         description="Local-first course reconstruction and mastery assessment API",
         lifespan=lifespan,
     )
@@ -297,6 +309,8 @@ def create_app(
     app.state.local_model_manager = model_manager
     app.state.transcriber = transcriber
     app.state.recordings = recordings
+    app.state.maintenance = maintenance
+    app.state.diagnostics = diagnostics
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost", "http://127.0.0.1"],
@@ -408,7 +422,7 @@ def create_app(
 
     @app.get("/health")
     def health() -> dict:
-        return {"status": "ok", "version": "0.2.0"}
+        return {"status": "ok", "version": settings.app_version}
 
     @app.get("/settings/provider")
     def provider_settings() -> dict:
@@ -442,7 +456,49 @@ def create_app(
 
     @app.patch("/settings/application")
     def update_application_settings(payload: AppSettingsUpdate) -> dict:
-        return automation.update_app_settings(payload.model_dump(exclude_none=True))
+        return automation.update_app_settings(payload.model_dump(exclude_unset=True))
+
+    @app.get("/maintenance/storage")
+    def storage_statistics(refresh: bool = False) -> dict:
+        return maintenance.refresh() if refresh else maintenance.cached()
+
+    @app.post("/maintenance/storage/preview")
+    def preview_storage_cleanup() -> dict:
+        return maintenance.preview()
+
+    @app.post("/maintenance/storage/cleanup")
+    def cleanup_storage(payload: StorageCleanupRequest) -> dict:
+        try:
+            return maintenance.cleanup(payload.preview_id, confirmed=payload.confirmed)
+        except PermissionError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/maintenance/diagnostics/export")
+    def export_diagnostics() -> FileResponse:
+        path: Path | None = None
+        try:
+            path, download_name = diagnostics.build()
+            automation.audit(
+                "export_diagnostics",
+                "diagnostic_bundle",
+                uuid.uuid4().hex,
+                {"uploaded": False, "contents": "whitelist"},
+            )
+        except Exception as exc:
+            if path is not None:
+                diagnostics.discard(path)
+            raise HTTPException(
+                status_code=500,
+                detail="诊断包生成失败，临时文件已清理，请稍后重试。",
+            ) from exc
+        return FileResponse(
+            path,
+            media_type="application/zip",
+            filename=download_name,
+            background=BackgroundTask(diagnostics.discard, path),
+        )
 
     @app.get("/settings/providers/catalog")
     def provider_catalog() -> list[dict]:
@@ -1023,6 +1079,7 @@ def create_app(
         except RecordingConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+
     @app.post("/sessions/{session_id}/resources/link", status_code=201)
     def add_link_resource(session_id: str, payload: LinkResourceCreate) -> dict:
         parsed_url = urlsplit(payload.url)
@@ -1445,28 +1502,12 @@ def create_app(
 
     @app.post("/reviews/{review_id}/decision")
     def decide_review(review_id: str, payload: ReviewDecision) -> dict:
-        review = automation.get_review_item(review_id)
-        if payload.action in {"accept", "edit_accept"}:
-            value = payload.edited_value or review.get("proposed_value")
-            if review["kind"] == "archive_match":
-                if not value:
-                    raise HTTPException(status_code=422, detail="请先选择 Session")
-                automation.adopt_inbox_item(review["subject_id"], value)
-            elif review["kind"] == "session_topic":
-                if not value:
-                    raise HTTPException(status_code=422, detail="主题标题不能为空")
-                automation.update_session_title(
-                    review["subject_id"],
-                    value,
-                    source="user_review" if payload.action == "edit_accept" else "transcript_rule",
-                    confidence=1 if payload.action == "edit_accept" else review["confidence"],
-                    locked=payload.action == "edit_accept",
-                )
-        return automation.decide_review(
+        return automation.apply_review_decision(
             review_id,
             payload.action,
-            payload.reason,
-            payload.snoozed_until,
+            edited_value=payload.edited_value,
+            reason=payload.reason,
+            snoozed_until=payload.snoozed_until,
         )
 
     @app.get("/debts")

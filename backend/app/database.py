@@ -288,6 +288,9 @@ class Database:
                 "sync_status": "ALTER TABLE schedule_rules ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'active'",
             },
             "schedule_occurrences": {
+                "adjustment_external_id": (
+                    "ALTER TABLE schedule_occurrences ADD COLUMN adjustment_external_id TEXT"
+                ),
                 "source": "ALTER TABLE schedule_occurrences ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'",
                 "last_seen_batch_id": "ALTER TABLE schedule_occurrences ADD COLUMN last_seen_batch_id TEXT",
                 "sync_status": "ALTER TABLE schedule_occurrences ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'active'",
@@ -309,6 +312,23 @@ class Database:
                 "custom_headers_json": (
                     "ALTER TABLE provider_profiles ADD COLUMN custom_headers_json "
                     "TEXT NOT NULL DEFAULT '{}'"
+                ),
+            },
+            "app_settings": {
+                "recording_chunk_retention_days": (
+                    "ALTER TABLE app_settings ADD COLUMN "
+                    "recording_chunk_retention_days INTEGER DEFAULT 14"
+                ),
+            },
+            "recordings": {
+                "raw_chunks_verified_at": (
+                    "ALTER TABLE recordings ADD COLUMN raw_chunks_verified_at TEXT"
+                ),
+                "raw_chunks_purged_at": (
+                    "ALTER TABLE recordings ADD COLUMN raw_chunks_purged_at TEXT"
+                ),
+                "raw_chunks_purged_bytes": (
+                    "ALTER TABLE recordings ADD COLUMN raw_chunks_purged_bytes BIGINT"
                 ),
             },
         }

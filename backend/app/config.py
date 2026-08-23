@@ -41,6 +41,7 @@ class Settings:
     local_asr_service_model: str = ""
     local_asr_service_convert_wav: bool = False
     local_asr_service_path: str = "/audio/transcriptions"
+    app_version: str = "0.2.0"
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -56,6 +57,7 @@ class Settings:
             base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
             ai_model=os.getenv("KNOWLEDGEDEBT_AI_MODEL", "gpt-5-mini"),
             asr_model=os.getenv("KNOWLEDGEDEBT_ASR_MODEL", "gpt-4o-mini-transcribe"),
+            app_version=os.getenv("KNOWLEDGEDEBT_APP_VERSION", "0.2.0").strip() or "0.2.0",
             embedding_provider=os.getenv("KNOWLEDGEDEBT_EMBEDDING_PROVIDER", "hash"),
             embedding_model=os.getenv("KNOWLEDGEDEBT_EMBEDDING_MODEL", "text-embedding-3-small"),
             storage_provider=os.getenv("KNOWLEDGEDEBT_STORAGE_PROVIDER", "local"),
