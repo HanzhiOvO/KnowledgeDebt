@@ -1,6 +1,6 @@
 # macOS 安装、升级与数据管理
 
-KnowledgeDebt v0.2 的普通用户版本面向 **macOS 13 及以上、Apple Silicon（M1/M2/M3/M4）**。安装包已经包含应用所需的 Python、Node.js、FFmpeg、ffprobe 和 whisper.cpp 命令行运行时；无需安装 Docker、Homebrew、数据库或开发工具。Intel Mac 和 Windows 暂无原生安装包。
+KnowledgeDebt v0.2 的普通用户版本面向 **macOS 13 及以上、Apple Silicon（M1/M2/M3/M4）**。安装包已经包含应用所需的 Python、Node.js、FFmpeg、ffprobe、whisper.cpp 和静音加速模型；无需安装 Docker、Homebrew、数据库或开发工具。Intel Mac 和 Windows 暂无原生安装包。
 
 ## 安装
 
@@ -19,10 +19,12 @@ KnowledgeDebt v0.2 的普通用户版本面向 **macOS 13 及以上、Apple Sili
 
 1. 打开“设置 → 本地转写模型”。
 2. 查看下载大小、磁盘占用、速度、准确率、语言和适用场景。
-3. 主动确认下载；一般课堂推荐 `Whisper Medium Q5`。
+3. 主动确认下载；一般课堂推荐 `Whisper Large v3 Turbo Q5`，它比 Small 更能保住技术术语，又比完整 Large v3 更适合本地运行。
 4. 下载完成并通过固定 SHA-256 校验后，点击“设为当前模型”。
 
 下载可取消，未完成分片会保留供下次断点续传；应用重启后可继续。模型损坏会被识别为异常，可重新下载。正在使用的模型必须先切换，才能删除。没有模型或 Provider 时，录音仍会先保存并进入“等待配置转写”，不会擅自外发。
+
+低配机器上，转写可能接近甚至超过录音时长。应用会按 CPU 核心数沿用 whisper.cpp 的安全线程数，将已规范化的 FLAC 直接送入转写，并用内置 VAD 跳过确定静音。它不会为了速度自动换成 Tiny/Small，也不会降低 beam search 或 best-of；模型选择始终由用户确认。
 
 ## 数据位置
 

@@ -65,6 +65,20 @@ LOCAL_MODEL_CATALOG = (
         source_url=_model_url("ggml-small-q5_1.bin"),
     ),
     LocalModelSpec(
+        id="large-v3-turbo-q5_0",
+        name="Whisper Large v3 Turbo Q5",
+        file_name="ggml-large-v3-turbo-q5_0.bin",
+        sha256="394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
+        download_bytes=574_041_195,
+        disk_bytes=574_041_195,
+        speed="CPU 中等 / Metal 较快",
+        accuracy="高（接近 Large v3）",
+        languages=("中文", "英文", "多语言"),
+        use_case="大学课堂与技术术语，低配机器优先兼顾准确率和速度",
+        recommended=True,
+        source_url=_model_url("ggml-large-v3-turbo-q5_0.bin"),
+    ),
+    LocalModelSpec(
         id="medium-q5_0",
         name="Whisper Medium Q5",
         file_name="ggml-medium-q5_0.bin",
@@ -75,7 +89,6 @@ LOCAL_MODEL_CATALOG = (
         accuracy="高",
         languages=("中文", "英文", "多语言"),
         use_case="大学课堂与技术术语，准确率和体积更均衡",
-        recommended=True,
         source_url=_model_url("ggml-medium-q5_0.bin"),
     ),
     LocalModelSpec(

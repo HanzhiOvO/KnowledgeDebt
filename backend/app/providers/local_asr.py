@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import json
 import mimetypes
+import os
 import shutil
 from dataclasses import dataclass
 from ipaddress import ip_address, ip_network
@@ -29,8 +30,12 @@ WHISPER_CPP_ADAPTER = "local_whisper_cpp"
 LOCAL_SERVICE_ADAPTER = "local_openai_asr"
 LOCAL_ASR_ADAPTERS = frozenset({WHISPER_CPP_ADAPTER, LOCAL_SERVICE_ADAPTER})
 
-#: whisper.cpp 只接受 16kHz 单声道 16bit WAV，其它容器需要先由 FFmpeg 转换。
+#: 当前锁定的 whisper.cpp 可直接解码这些容器。MediaPreparer 生成的 FLAC
+#: 本身已是 16kHz 单声道，不应再解码、写出一份临时 WAV。
+WHISPER_CPP_NATIVE_SUFFIXES = frozenset({".flac", ".mp3", ".ogg", ".wav"})
+#: whisper.cpp 不直接支持的容器仍统一转为 16kHz 单声道 16bit WAV。
 WHISPER_CPP_INPUT_SUFFIX = ".wav"
+DEFAULT_VAD_MODEL_FILE = "ggml-silero-v6.2.0.bin"
 #: OpenAI 兼容默认路径；whisper.cpp 自带 server 需要改成 /inference。
 DEFAULT_TRANSCRIPTIONS_PATH = "/audio/transcriptions"
 _TERMINATE_GRACE_SECONDS = 5.0
@@ -126,6 +131,19 @@ def resolve_model_path(model: str, model_dir: Path | None) -> Path | None:
     return None
 
 
+def effective_whisper_threads(configured: int, cpu_count: int | None = None) -> int:
+    """返回 whisper.cpp 实际会使用的线程数。
+
+    CLI 的默认值是“逻辑核心数和 4 的较小值”。沿用上游策略可以避免在
+    双核低配机器上过度订阅，也不会通过改小 beam/best-of 换取速度。
+    """
+
+    if configured > 0:
+        return configured
+    available = cpu_count if cpu_count is not None else os.cpu_count()
+    return max(1, min(4, available or 1))
+
+
 def clock_to_seconds(value: Any) -> float | None:
     """解析 whisper.cpp 的 `00:01:02,500` 时间戳；无法解析时返回 None。"""
 
@@ -206,10 +224,21 @@ async def run_process(command: list[str], *, timeout: int, failure: str) -> str:
     return (stdout or b"").decode("utf-8", "replace")
 
 
-async def ensure_wav_16k(source: Path, workspace: Path, ffmpeg_path: str, timeout: int) -> Path:
-    """把任意分片转换为 16kHz 单声道 WAV；已经是 WAV 时原样返回，绝不改动原文件。"""
+async def ensure_wav_16k(
+    source: Path,
+    workspace: Path,
+    ffmpeg_path: str,
+    timeout: int,
+    *,
+    force: bool = False,
+) -> Path:
+    """把 whisper.cpp 不直接支持的分片转为 16kHz 单声道 WAV。
 
-    if source.suffix.lower() == WHISPER_CPP_INPUT_SUFFIX:
+    FLAC/MP3/OGG/WAV 由 whisper.cpp 直接解码，避免低配机器上重复解码和临时 WAV I/O。
+    该函数在任何情况下都不会改动原文件。
+    """
+
+    if not force and source.suffix.lower() in WHISPER_CPP_NATIVE_SUFFIXES:
         return source
     ffmpeg = resolve_executable(ffmpeg_path)
     if not ffmpeg:
@@ -258,7 +287,24 @@ class WhisperCppRuntime:
     timeout_seconds: int = 3600
     initial_prompt: str = ""
     ffmpeg_path: str = "ffmpeg"
+    vad_enabled: bool = True
+    vad_model: str = ""
     extra_args: tuple[str, ...] = ()
+
+
+def resolve_vad_model_path(runtime: WhisperCppRuntime) -> Path | None:
+    """解析可选 VAD 模型；缺失时保持完整音频转写，不阻断核心功能。"""
+
+    if not runtime.vad_enabled:
+        return None
+    if runtime.vad_model:
+        candidate = resolve_model_path(runtime.vad_model, runtime.model_dir)
+        return candidate if candidate and candidate.stat().st_size > 0 else None
+    if runtime.model_dir:
+        candidate = runtime.model_dir / DEFAULT_VAD_MODEL_FILE
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            return candidate
+    return None
 
 
 class LocalWhisperCppProvider:
@@ -296,7 +342,13 @@ class LocalWhisperCppProvider:
             raise LocalASRUnavailable(
                 f"whisper.cpp 模型文件为空：{model}。请重新下载完整模型后重试；原始录音未被修改。"
             )
-        return {"binary": binary, "model": str(model), "model_bytes": size}
+        vad_model = resolve_vad_model_path(self.runtime)
+        return {
+            "binary": binary,
+            "model": str(model),
+            "model_bytes": size,
+            "vad_model": str(vad_model) if vad_model else None,
+        }
 
     async def transcribe(self, path: str, mime_type: str | None) -> list[TranscriptSegment]:
         resolved = self.preflight()
@@ -319,6 +371,7 @@ class LocalWhisperCppProvider:
                 "-f",
                 str(audio),
                 "-oj",
+                "-np",
                 "-of",
                 str(prefix),
             ]
@@ -328,6 +381,22 @@ class LocalWhisperCppProvider:
                 command += ["-t", str(self.runtime.threads)]
             if self.runtime.initial_prompt:
                 command += ["--prompt", self.runtime.initial_prompt]
+            if resolved["vad_model"]:
+                # 低阈值、长静音和较宽 speech padding 优先保留低音量发言；
+                # 只跳过确定的静音，不改动 beam search / best-of 等识别质量参数。
+                command += [
+                    "--vad",
+                    "--vad-model",
+                    resolved["vad_model"],
+                    "--vad-threshold",
+                    "0.35",
+                    "--vad-min-silence-duration-ms",
+                    "1200",
+                    "--vad-speech-pad-ms",
+                    "400",
+                    "--vad-samples-overlap",
+                    "0.20",
+                ]
             command += list(self.runtime.extra_args)
             await run_process(
                 command,
@@ -441,7 +510,13 @@ class LocalOpenAICompatibleASRProvider:
             scratch_root.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(prefix="kd-local-asr-", dir=str(scratch_root) if scratch_root else None) as scratch:
             upload = (
-                await ensure_wav_16k(file_path, Path(scratch), self.ffmpeg_path, self.timeout_seconds)
+                await ensure_wav_16k(
+                    file_path,
+                    Path(scratch),
+                    self.ffmpeg_path,
+                    self.timeout_seconds,
+                    force=True,
+                )
                 if self.convert_to_wav
                 else file_path
             )

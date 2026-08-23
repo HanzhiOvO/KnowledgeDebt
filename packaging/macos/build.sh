@@ -31,6 +31,9 @@ KD_MAC_WHISPER_TAG="b4938"
 KD_MAC_WHISPER_ARCHIVE="whisper.cpp-$KD_MAC_WHISPER_TAG.tar.gz"
 KD_MAC_WHISPER_SHA256="6d8d70a014ca2b10f8a6d006b8f423e5f5ef2afcfbe92b57ab4e01107238112a"
 KD_MAC_WHISPER_BUILD_ID="$KD_MAC_WHISPER_TAG-arm64-macos13-static-metal-noblas-pathmap-v3"
+KD_MAC_VAD_REVISION="9ffd54a1e1ee413ddf265af9913beaf518d1639b"
+KD_MAC_VAD_FILE="ggml-silero-v6.2.0.bin"
+KD_MAC_VAD_SHA256="2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987"
 
 case "$KD_MAC_VERSION" in
   *[!0-9A-Za-z._-]*|'') echo "KD_MAC_VERSION 只能包含数字、字母、点、下划线或连字符" >&2; exit 2 ;;
@@ -104,6 +107,12 @@ download_verified \
   "https://github.com/ggml-org/whisper.cpp/archive/refs/tags/$KD_MAC_WHISPER_TAG.tar.gz" \
   "$KD_MAC_WHISPER_SHA256" \
   "$KD_MAC_CACHE_ROOT/$KD_MAC_WHISPER_ARCHIVE"
+
+echo "准备经过哈希校验的 Silero VAD $KD_MAC_VAD_FILE"
+download_verified \
+  "https://huggingface.co/ggml-org/whisper-vad/resolve/$KD_MAC_VAD_REVISION/$KD_MAC_VAD_FILE?download=true" \
+  "$KD_MAC_VAD_SHA256" \
+  "$KD_MAC_CACHE_ROOT/$KD_MAC_VAD_FILE"
 
 mkdir -p "$KD_MAC_BUILD_ROOT" "$KD_MAC_DIST_ROOT"
 KD_MAC_PYTHON_BUILD_ID="$(
@@ -293,6 +302,7 @@ mkdir -p \
   "$KD_MAC_RESOURCES/runtime/node/bin" \
   "$KD_MAC_RESOURCES/runtime/ffmpeg/bin" \
   "$KD_MAC_RESOURCES/runtime/whisper/bin" \
+  "$KD_MAC_RESOURCES/runtime/whisper/models" \
   "$KD_MAC_RESOURCES/web" \
   "$KD_MAC_RESOURCES/LICENSES" \
   "$KD_MAC_RESOURCES/DOCUMENTATION"
@@ -302,6 +312,7 @@ cp "$KD_MAC_BUILD_ROOT/node/bin/node" "$KD_MAC_RESOURCES/runtime/node/bin/node"
 cp "$KD_MAC_FFMPEG_INSTALL/bin/ffmpeg" "$KD_MAC_RESOURCES/runtime/ffmpeg/bin/ffmpeg"
 cp "$KD_MAC_FFMPEG_INSTALL/bin/ffprobe" "$KD_MAC_RESOURCES/runtime/ffmpeg/bin/ffprobe"
 cp "$KD_MAC_WHISPER_BINARY" "$KD_MAC_RESOURCES/runtime/whisper/bin/whisper-cli"
+cp "$KD_MAC_CACHE_ROOT/$KD_MAC_VAD_FILE" "$KD_MAC_RESOURCES/runtime/whisper/models/$KD_MAC_VAD_FILE"
 cp "$KD_MAC_ROOT/.env.example" "$KD_MAC_RESOURCES/DOCUMENTATION/DEFAULT_CONFIGURATION.env.example"
 cp "$KD_MAC_ROOT/README.md" "$KD_MAC_RESOURCES/DOCUMENTATION/README.zh-CN.md"
 cp "$KD_MAC_ROOT/docs/macos.md" "$KD_MAC_RESOURCES/DOCUMENTATION/macOS-安装与数据管理.md"
@@ -353,6 +364,7 @@ cp "$KD_MAC_ROOT/LICENSE" "$KD_MAC_RESOURCES/LICENSES/KnowledgeDebt-MIT.txt"
 cp "$KD_MAC_BUILD_ROOT/node/LICENSE" "$KD_MAC_RESOURCES/LICENSES/Node.js-MIT.txt"
 cp "$KD_MAC_BUILD_ROOT/ffmpeg-source/COPYING.LGPLv2.1" "$KD_MAC_RESOURCES/LICENSES/FFmpeg-LGPLv2.1.txt"
 cp "$KD_MAC_BUILD_ROOT/whisper-source/LICENSE" "$KD_MAC_RESOURCES/LICENSES/whisper.cpp-MIT.txt"
+cp "$KD_MAC_ROOT/packaging/macos/SILERO_VAD_LICENSE.txt" "$KD_MAC_RESOURCES/LICENSES/Silero-VAD-MIT.txt"
 cp "$KD_MAC_ROOT/packaging/macos/THIRD_PARTY_NOTICES.md" "$KD_MAC_RESOURCES/LICENSES/THIRD_PARTY_NOTICES.md"
 "$KD_MAC_PYTHON" "$KD_MAC_ROOT/packaging/macos/generate_notices.py" \
   --web-root "$KD_MAC_RESOURCES/web" \

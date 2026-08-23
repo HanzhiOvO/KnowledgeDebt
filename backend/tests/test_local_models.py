@@ -14,6 +14,7 @@ from app.automation import AutomationRepository
 from app.config import Settings
 from app.database import Database
 from app.local_models import (
+    LOCAL_MODEL_CATALOG,
     HttpModelDownloader,
     LocalModelConflict,
     LocalModelManager,
@@ -69,6 +70,18 @@ def tiny_spec(content: bytes) -> LocalModelSpec:
         recommended=True,
         source_url="https://huggingface.co/test/repository/resolve/revision/model.bin",
     )
+
+
+def test_official_catalog_recommends_verified_turbo_for_classroom_accuracy():
+    recommended = [model for model in LOCAL_MODEL_CATALOG if model.recommended]
+
+    assert [model.id for model in recommended] == ["large-v3-turbo-q5_0"]
+    assert recommended[0].download_bytes == 574_041_195
+    assert (
+        recommended[0].sha256
+        == "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
+    )
+    assert "5359861c739e955e79d9a303bcbc70fb988958b1" in recommended[0].source_url
 
 
 def wait_for_status(manager: LocalModelManager, status: str, timeout: float = 5) -> dict:

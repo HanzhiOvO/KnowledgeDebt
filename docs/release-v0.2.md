@@ -4,7 +4,7 @@
 
 ## 版本摘要
 
-v0.2 把 KnowledgeDebt 从手动整理原型扩展为本地优先的自动化课程工作台：权威课表快照、惰性 Session、浏览器增量录音、课程链接和来源预览、默认自动转写、分片续跑、统一审核、自动归档与课堂标题更新、Provider Profile、本地模型管理，以及 Apple Silicon 原生应用打包。
+v0.2 把 KnowledgeDebt 从手动整理原型扩展为本地优先的自动化课程工作台：权威课表快照、惰性 Session、浏览器增量录音、课程链接和来源预览、默认自动转写、分片续跑、统一审核、自动归档与课堂标题更新、Provider Profile、本地模型管理，以及 Apple Silicon 原生应用打包。本轮又补齐了低配 CPU 路径：FLAC 直读、保守静音跳过、CPU 安全线程策略和 Large v3 Turbo Q5 课堂推荐档。
 
 首页和用户文档默认使用中文。普通用户优先使用 macOS DMG；源码一键启动和 Docker Compose 保留给开发、自托管和服务器部署。
 
@@ -17,7 +17,7 @@ v0.2 把 KnowledgeDebt 从手动整理原型扩展为本地优先的自动化课
 - FFmpeg 9.0.1 与 whisper.cpp b4938 对应源码归档；
 - `SHA256SUMS.txt`、`SIGNING_STATUS.txt` 和应用内第三方许可证清单。
 
-构建固定并校验 Node.js 24.19.0、FFmpeg 9.0.1、CMake 4.1.0（仅构建使用）和 whisper.cpp b4938 / CLI 1.9.3。FFmpeg 与 whisper.cpp 为 arm64，未链接 Homebrew 或用户目录动态库；安装包会拒绝开发者主目录、仓库目录和临时构建路径。模型权重不预装。
+构建固定并校验 Node.js 24.19.0、FFmpeg 9.0.1、CMake 4.1.0（仅构建使用）、whisper.cpp b4938 / CLI 1.9.3 和 Silero VAD 6.2.0。FFmpeg 与 whisper.cpp 为 arm64，未链接 Homebrew 或用户目录动态库；安装包会拒绝开发者主目录、仓库目录和临时构建路径。包内只预装不到 1 MB 的静音检测权重；大型转写模型仍需用户确认后下载。
 
 最终校验值以交付目录中的 `SHA256SUMS.txt` 为唯一依据，不应从本文手工复制旧值。
 
@@ -33,12 +33,13 @@ cd dist/macos && shasum -a 256 -c SHA256SUMS.txt
 
 2026-08-23 当前候选已实际执行：
 
-- `make verify` 等价检查：Ruff 通过；Pytest `102 passed, 1 skipped`，唯一跳过项为本机没有可用 PostgreSQL；Web ESLint、TypeScript 与 Next.js 16.3.1 production build 通过；
+- `make verify`：Ruff 通过；Pytest `136 passed, 1 skipped`，唯一跳过项为本机没有可用 PostgreSQL；Web ESLint、TypeScript 与 Next.js 16.3.1 production build 通过；
 - macOS/Linux `start.sh --skip-install --no-browser` 实际启动通过：API 与 Web 均返回 HTTP 200，只监听 `127.0.0.1`，按 `Ctrl+C` 后两个端口均释放；
 - Windows `start.ps1` 与 `start.bat` 已补齐同等启动流程并限制回环监听；当前构建机没有 Windows/PowerShell，仍需在 Windows 10/11 实机复验；
 - 本地模型取消/断点续传竞态回归额外连续执行 20 次，均进入稳定的 `cancelled` 终态并可从精确偏移继续；
 - 全新 SQLite 从基线升级到 `20260821_0006`，重复执行 `upgrade head` 无变更；Provider 自定义请求头列、转写唯一索引和模型下载索引均存在；
-- `make native-macos`：应用内 API、Web、录音落盘、FFmpeg 和运行时冒烟通过，DMG `hdiutil verify` 通过；本行以同日重新构建成功及交付目录 SHA 清单为准；
+- 真实 60 秒 STM32 课程样本、强制纯 CPU：Large v3 Turbo Q5 保守 VAD 开启前后文本逐句一致，耗时从 70.5 秒降到 61.3 秒；Small Q5 仅用 21.9 秒但术语明显错，因此不会为速度自动降模型；三分之二静音样本上 VAD 节省约 47% CPU 耗时并消除静音幻觉；
+- `make native-macos`：应用内 API、Web、录音落盘、FFmpeg、whisper.cpp、VAD 哈希与运行时冒烟通过，DMG `hdiutil verify` 通过；本行以同日重新构建成功及交付目录 SHA 清单为准；
 - 独立解压 ZIP 与只读挂载 DMG：两份 `.app` 均通过 `codesign --verify --deep --strict` 与 `plutil`；启动器、FFmpeg、ffprobe、whisper-cli 均为 arm64；whisper-cli 只链接 macOS 系统框架；
 - SHA256 清单复核通过；应用大小约 302 MB；未预装模型权重，未发现数据库、真实 `.env`、Finder 元数据或开发者绝对路径；排除固定官方二进制与签名清单的项目文本疑似凭据扫描为零。
 

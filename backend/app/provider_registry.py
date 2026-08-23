@@ -20,8 +20,10 @@ from .providers.local_asr import (
     LocalOpenAICompatibleASRProvider,
     LocalWhisperCppProvider,
     WhisperCppRuntime,
+    effective_whisper_threads,
     resolve_executable,
     resolve_model_path,
+    resolve_vad_model_path,
 )
 from .providers.local_rule import LocalRuleProvider
 from .providers.openai_compatible import OpenAICompatibleProvider
@@ -484,6 +486,8 @@ class ProviderRegistry:
             timeout_seconds=self.settings.local_asr_timeout_seconds,
             initial_prompt=self.settings.local_asr_initial_prompt,
             ffmpeg_path=self.settings.ffmpeg_path,
+            vad_enabled=self.settings.local_asr_vad_enabled,
+            vad_model=self.settings.local_asr_vad_model,
         )
 
     def local_asr_status(self, profile: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -493,6 +497,7 @@ class ProviderRegistry:
         runtime = self.whisper_runtime(profile)
         binary = resolve_executable(runtime.binary_path)
         model = resolve_model_path(runtime.model, runtime.model_dir)
+        vad_model = resolve_vad_model_path(runtime)
         return {
             "adapter": WHISPER_CPP_ADAPTER,
             "binary": runtime.binary_path,
@@ -505,8 +510,13 @@ class ProviderRegistry:
             "model_bytes": model.stat().st_size if model else None,
             "language": runtime.language,
             "threads": runtime.threads,
+            "effective_threads": effective_whisper_threads(runtime.threads),
             "timeout_seconds": runtime.timeout_seconds,
             "ffmpeg_ready": bool(resolve_executable(runtime.ffmpeg_path)),
+            "direct_input_formats": ["FLAC", "MP3", "OGG", "WAV"],
+            "vad_enabled": runtime.vad_enabled,
+            "vad_ready": bool(vad_model),
+            "vad_model_resolved": str(vad_model) if vad_model else None,
             "ready": bool(binary and model),
             "profile_id": profile.get("id") if profile else None,
             "active": bool(

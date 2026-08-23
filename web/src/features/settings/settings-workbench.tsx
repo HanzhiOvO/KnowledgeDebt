@@ -346,11 +346,12 @@ function LocalASRPanel({ status }: { status?: LocalASRStatus | null }) {
         <div><dt>可执行文件</dt><dd>{status.binary_ready ? status.binary_resolved : `${status.binary || "未配置"} · 未找到`}</dd></div>
         <div><dt>模型</dt><dd>{status.model_ready ? `${status.model_resolved}${megabytes ? ` · ${megabytes} MB` : ""}` : `${status.model || "未配置"} · 未找到`}</dd></div>
         <div><dt>模型目录</dt><dd>{status.model_dir ?? "未配置"}</dd></div>
-        <div><dt>语言 / 线程</dt><dd>{status.language} / {status.threads > 0 ? status.threads : "由 whisper.cpp 决定"}</dd></div>
+        <div><dt>语言 / CPU 线程</dt><dd>{status.language} / {status.effective_threads}{status.threads > 0 ? "（手动）" : "（按核心自动）"}</dd></div>
+        <div><dt>静音加速</dt><dd>{status.vad_ready ? "已启用·保守保留低音量发言" : status.vad_enabled ? "未找到 VAD 模型·将完整转写" : "已关闭"}</dd></div>
         <div><dt>单分片超时</dt><dd>{status.timeout_seconds} 秒</dd></div>
-        <div><dt>FFmpeg</dt><dd>{status.ffmpeg_ready ? "可用" : "缺失 · 非 WAV 分片无法转换"}</dd></div>
+        <div><dt>音频路径</dt><dd>{status.direct_input_formats.join(" / ")} 直接转写；{status.ffmpeg_ready ? "其他格式可转换" : "其他格式缺少 FFmpeg"}</dd></div>
       </dl>
-      <p>{status.ready ? "长录音仍按本地分片处理，失败分片可断点续跑。切换到外部 Provider 不会删除已下载模型。" : status.binary_ready ? "运行时已找到；请在下方选择并下载模型。下载前会显示大小，完成后会校验 SHA-256。" : "原生安装包应自带 whisper.cpp；源码开发模式可配置 KNOWLEDGEDEBT_LOCAL_ASR_BINARY。即使尚未配置，录音仍会安全保存。"}</p>
+      <p>{status.ready ? "长录音仍按本地分片处理，FLAC 不再重复转 WAV；失败分片可断点续跑。加速不会降低 beam search 或 best-of 等识别质量参数。" : status.binary_ready ? "运行时已找到；请在下方选择并下载模型。下载前会显示大小，完成后会校验 SHA-256。" : "原生安装包应自带 whisper.cpp；源码开发模式可配置 KNOWLEDGEDEBT_LOCAL_ASR_BINARY。即使尚未配置，录音仍会安全保存。"}</p>
     </article>
   );
 }
