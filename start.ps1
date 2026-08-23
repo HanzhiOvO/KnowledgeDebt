@@ -109,11 +109,7 @@ if (-not $SkipInstall) {
         }
     }
 
-    $localAsr = ($env:KNOWLEDGEDEBT_LOCAL_ASR -ne "0")
     $requirementFiles = @("backend\requirements.txt", "backend\requirements-dev.txt")
-    if ($localAsr) {
-        $requirementFiles += "backend\requirements-local-asr.txt"
-    }
     $requirementsStamp = ".venv\.knowledgedebt-requirements.sha256"
     $requirementsHash = Get-CombinedHash $requirementFiles
     $installedRequirementsHash = if (Test-Path $requirementsStamp) {
@@ -124,11 +120,6 @@ if (-not $SkipInstall) {
         Write-Step "正在安装后端依赖……"
         & $venvPython -m pip install -r "backend\requirements-dev.txt"
         if ($LASTEXITCODE -ne 0) { Fail "后端依赖安装失败。" }
-        if ($localAsr) {
-            Write-Step "正在安装本地语音转写 faster-whisper……"
-            & $venvPython -m pip install -r "backend\requirements-local-asr.txt"
-            if ($LASTEXITCODE -ne 0) { Fail "本地语音转写依赖安装失败。" }
-        }
         Set-Content -Path $requirementsStamp -Value $requirementsHash -Encoding ASCII
     } else {
         Write-Step "后端依赖没有变化，跳过安装。"
@@ -179,7 +170,7 @@ try {
         -PassThru -WindowStyle Hidden
 
     $web = Start-Process -FilePath "cmd.exe" `
-        -ArgumentList @("/c", "npm run dev") `
+        -ArgumentList @("/c", "npm run dev -- --hostname 127.0.0.1") `
         -WorkingDirectory (Join-Path $root "web") `
         -RedirectStandardOutput (Join-Path $root "start-web.log") `
         -RedirectStandardError (Join-Path $root "start-web.error.log") `

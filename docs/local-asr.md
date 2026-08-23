@@ -11,7 +11,7 @@
 
 | 适配器 | 状态 | 适用场景 | 音频去向 |
 | --- | --- | --- | --- |
-| `local_whisper_cpp` | 已实现，需自行安装运行时 | API 与转写在同一台机器（MacBook 或寝室服务器） | 只在本机进程之间传递 |
+| `local_whisper_cpp` | 已实现；原生包已内置运行时 | API 与转写在同一台机器（MacBook 或寝室服务器） | 只在本机进程之间传递 |
 | `local_openai_asr` | 已实现，需自行部署服务 | 转写放在另一台私网机器，API 通过 HTTP 调用 | 只在私网内传输 |
 
 两者都：
@@ -21,7 +21,23 @@
 - 长录音仍由 FFmpeg 分片（默认 1500 秒/片），成功分片跳过、失败分片续跑、时间戳按全课堂合并；
 - 失败、超时、取消都不会删除原始录音或已成功分片。
 
+仓库还保留一个 faster-whisper 实验模块，但它没有接入统一 Profile、模型下载确认和默认转写路由。一键启动脚本与默认 Docker 镜像都不会安装它；在这些边界完成前，不应把它当作正式能力，也不会允许首次转写静默拉取模型。
+
 `local_openai_asr` 的 Base URL 必须是私网地址：`localhost`、`127.0.0.0/8`、`10./172.16-31./192.168.`、Tailscale `100.64.0.0/10`、`fd00::/8`、`.local`/`.lan`/`.internal`/`.ts.net` 或不含点号的局域网主机名。填入公网地址会被后端拒绝（HTTP 422），防止把外发伪装成本地。
+
+## 原生应用的模型管理
+
+macOS 原生安装包已经固定并内置 whisper.cpp `1.9.3` Apple Silicon CLI 和 Metal 后端，但不会把大型模型塞进应用。打开“设置 → 本地转写模型”后，可主动选择以下固定目录项：
+
+| 模型 | 下载与磁盘占用 | 速度 | 准确率 | 建议场景 |
+| --- | ---: | --- | --- | --- |
+| Whisper Small Q5 | 190,085,487 字节 | 较快 | 较好 | 内存较小的 Mac、短课或先体验 |
+| **Whisper Medium Q5** | 539,212,467 字节 | 中等 | 高 | 大学课堂与技术术语，默认推荐 |
+| Whisper Medium Q8 | 823,369,779 字节 | 较慢 | 更高 | 术语密集课程，优先识别质量 |
+
+目录固定到 `ggerganov/whisper.cpp` 仓库的审核提交，不接受用户提供下载 URL。每次下载都需要明确确认，并执行磁盘空间预检、流式写入和最终 SHA-256/精确大小校验；下载分片保存在用户数据目录，取消或退出后可以继续。完整文件通过原子替换启用，损坏文件不会被当成可用模型。正在使用的模型不能直接删除。
+
+原生应用模型位置是 `~/Library/Application Support/KnowledgeDebt/models/`。没有模型时，录音和上传仍正常保存并显示“等待配置转写”，不会自动改用外部服务。更多安装与数据管理说明见 [macos.md](macos.md)。
 
 ## 无 GPU 服务器选型（16GB 及以上内存）
 
@@ -44,7 +60,7 @@
 
 > 没有 NVIDIA GPU 时不要安装 CUDA 栈，也不要下载 Qwen3-ASR / faster-whisper 的 GPU 权重。
 
-## 安装 whisper.cpp
+## 源码开发或寝室服务器安装 whisper.cpp
 
 macOS：
 
@@ -61,11 +77,11 @@ cd whisper.cpp && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build bui
 sudo install -m755 build/bin/whisper-cli /usr/local/bin/whisper-cli
 ```
 
-下载模型到数据目录（默认 `backend/data/asr-models`）：
+下载模型到数据目录（新环境默认 `backend/data/models`）：
 
 ```bash
-mkdir -p backend/data/asr-models
-curl -L -o backend/data/asr-models/ggml-medium.bin \
+mkdir -p backend/data/models
+curl -L -o backend/data/models/ggml-medium.bin \
   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin
 ```
 
@@ -78,7 +94,7 @@ curl -L -o backend/data/asr-models/ggml-medium.bin \
 ```bash
 KNOWLEDGEDEBT_LOCAL_ASR_BINARY=whisper-cli          # 或绝对路径
 KNOWLEDGEDEBT_LOCAL_ASR_MODEL=ggml-medium.bin       # 绝对路径、模型目录下文件名，或 medium 简称
-KNOWLEDGEDEBT_LOCAL_ASR_MODEL_DIR=                  # 留空则用 <数据目录>/asr-models
+KNOWLEDGEDEBT_LOCAL_ASR_MODEL_DIR=                  # 留空则用 <数据目录>/models
 KNOWLEDGEDEBT_LOCAL_ASR_LANGUAGE=zh
 KNOWLEDGEDEBT_LOCAL_ASR_THREADS=0                   # 0 表示交给 whisper.cpp 决定
 KNOWLEDGEDEBT_LOCAL_ASR_TIMEOUT_SECONDS=3600        # 单个分片的墙钟上限
@@ -116,9 +132,11 @@ KNOWLEDGEDEBT_LOCAL_ASR_SERVICE_MODEL=ggml-medium
 重启 API 后打开「设置 → Provider」：
 
 1. **本地转写 · whisper.cpp** 卡片会显示可执行文件、模型、模型目录、线程、超时与 FFmpeg 的真实就绪状态；
-2. 首次初始化的数据库在本地运行时就绪时，会直接把「语音转写」默认路由指向本地 Profile；
-3. 已有数据库不会被改动，请用「＋ 新建 Profile」选择接入方式后手动切换默认路由；
-4. 点击「测试连接」会真实检查可执行文件与模型（whisper.cpp）或请求 `/models`（私网服务），不会伪造通过。
+2. “本地转写模型”区域负责经过校验的目录下载、继续、取消、切换与删除；
+3. 设为当前模型时会创建或更新本地 Profile，并将“语音转写”默认路由切到该本地 Profile；
+4. 私网服务仍通过“＋ 新建 Profile”配置；点击“测试连接”会真实检查运行时与模型或请求服务端点，不会伪造通过。
+
+旧源码环境如果已经存在 `<数据目录>/asr-models` 且新 `models` 目录尚未创建，会继续读取旧目录，避免升级后看不到既有模型；新安装统一使用 `models`。
 
 ## 行为与边界
 
@@ -152,6 +170,8 @@ docker compose --profile local-asr up --build
 | --- | --- |
 | 「未找到 whisper.cpp 可执行文件」 | 未安装或路径错误；设置 `KNOWLEDGEDEBT_LOCAL_ASR_BINARY` 或在 Profile 填绝对路径 |
 | 「未找到 whisper.cpp 模型」 | 模型未下载或文件名不符；确认模型目录与文件名 |
+| 模型显示“文件损坏” | 文件大小或 SHA-256 与固定目录不一致；点击重新下载，不要继续使用该文件 |
+| 下载中断或应用退出 | 已下载分片仍保留；重新打开设置并点击继续下载 |
 | 「需要 FFmpeg」 | 安装 FFmpeg 或设置 `KNOWLEDGEDEBT_FFMPEG_PATH`，见 [ffmpeg.md](ffmpeg.md) |
 | 「超过 N 秒仍未完成」 | 模型过大或分片过长；调小分片、换小模型或提高超时 |
 | 「JSON 结果文件」相关错误 | whisper.cpp 版本过旧，不支持 `-oj/--output-json`，请升级 |
@@ -161,4 +181,4 @@ docker compose --profile local-asr up --build
 
 ## 回归测试
 
-`backend/tests/test_local_asr.py` 使用真实子进程与 127.0.0.1 回环 HTTP 服务，不访问外部网络、不下载模型，覆盖：命令行契约与 JSON 时间戳解析、时钟时间戳回退、非 WAV 分片转换、缺少运行时/模型/FFmpeg 的可执行报错、真实 stderr 透出、超时与取消真正杀掉进程、私网地址守卫、默认路由选择、运行中取消后的断点续跑，以及 API 层拒绝公网地址并强制本地标记。
+`backend/tests/test_local_asr.py` 使用真实子进程与 127.0.0.1 回环 HTTP 服务，不访问外部网络、不下载模型，覆盖：命令行契约与 JSON 时间戳解析、时钟时间戳回退、非 WAV 分片转换、缺少运行时/模型/FFmpeg 的可执行报错、真实 stderr 透出、超时与取消真正杀掉进程、私网地址守卫、默认路由选择、运行中取消后的断点续跑，以及 API 层拒绝公网地址并强制本地标记。`backend/tests/test_local_models.py` 另行覆盖下载确认、Range 续传、取消、重启恢复、校验、损坏、切换、删除保护与 API。

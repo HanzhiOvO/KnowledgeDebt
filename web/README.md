@@ -1,4 +1,4 @@
-# KnowledgeDebt Web 工作台
+# 知债 KnowledgeDebt Web 工作台
 
 这里是 Next.js 16 / React 19 主客户端。v0.2 默认提供五个工作区：**总览、课表、课程、待审核、设置**。
 

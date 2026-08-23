@@ -1,7 +1,9 @@
-# KnowledgeDebt 中文文档
+# 知债 KnowledgeDebt 中文文档
 
 | 文档 | 内容 |
 | --- | --- |
+| [macOS 安装与数据管理](macos.md) | 原生安装、模型首次配置、升级、备份、恢复与卸载 |
+| [v0.2 发布与验收记录](release-v0.2.md) | 构建、测试、22 项验收状态、外部阻塞与已知限制 |
 | [Provider 与密钥](providers.md) | Profile、能力声明、真实支持状态、密钥与调用台账 |
 | [浙江工商大学教务连接器](zjsu-schedule.md) | 已实现边界、fixture 格式、实时连接前置条件 |
 | [FFmpeg 与长录音](ffmpeg.md) | 安装、分片、续跑、时间戳与故障恢复 |

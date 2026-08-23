@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import time
+import wave
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -10,6 +12,7 @@ import httpx
 
 from .automation import AutomationRepository
 from .config import Settings
+from .provider_headers import normalize_external_base_url, validate_custom_headers
 from .providers.hash_embedding import HashEmbeddingProvider
 from .providers.local_asr import (
     LOCAL_SERVICE_ADAPTER,
@@ -20,6 +23,7 @@ from .providers.local_asr import (
     resolve_executable,
     resolve_model_path,
 )
+from .providers.local_rule import LocalRuleProvider
 from .providers.openai_compatible import OpenAICompatibleProvider
 from .secrets import SecretStore
 
@@ -139,6 +143,18 @@ class LoggedEmbeddingProvider:
 
 PROVIDER_CATALOG: list[dict[str, Any]] = [
     {
+        "vendor": "local_rule",
+        "label": "本地规则引擎",
+        "adapter": "local_rule",
+        "groups": ["ai"],
+        "capabilities": ["structured_generation", "chat_analysis"],
+        "implementation_status": "tested",
+        "note": (
+            "零配置、完全离线的透明规则引擎。它只整理已检索到的真实资料，"
+            "所有结果均标为推断，不冒充语义大模型。"
+        ),
+    },
+    {
         "vendor": "openai",
         "label": "OpenAI",
         "adapter": "openai_compatible",
@@ -188,6 +204,15 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "capabilities": ["structured_generation", "chat_analysis"],
         "implementation_status": "compatible_preset_unverified",
         "note": "兼容预设，不等于所有模型均支持严格 JSON Schema。",
+    },
+    {
+        "vendor": "opencode",
+        "label": "OpenCode Zen",
+        "adapter": "openai_compatible",
+        "groups": ["ai"],
+        "capabilities": ["structured_generation", "chat_analysis"],
+        "implementation_status": "compatible_preset_unverified",
+        "note": "OpenAI-compatible 预设；真实模型与结构化输出能力必须由用户连接测试确认。",
     },
     {
         "vendor": "moonshot",
@@ -269,9 +294,11 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "capabilities": ["audio_transcription", "segment_timestamps"],
         "implementation_status": "local_runtime_required",
         "note": (
-            "适配器已实现并在 macOS + whisper.cpp 1.9.2 + ggml-tiny 上用真实课堂录音实测通过："
+            "适配器已在 macOS + whisper.cpp 1.9.2 + ggml-tiny 上用真实课堂录音验证协议，"
+            "原生包固定 whisper.cpp 1.9.3 并通过运行时冒烟："
             "解析 JSON 分段时间戳，支持中文语言设置，超时与取消都会终止子进程。"
-            "需要操作者自行安装 whisper.cpp 并下载 ggml 模型（推荐 medium，tiny 对技术名词识别很差）；"
+            "源码模式可连接已有 whisper.cpp；原生包由构建脚本内置运行时。"
+            "模型需要由用户在应用内确认下载（推荐 medium，tiny 对技术名词识别很差）；"
             "不声明 long_audio，长录音继续走本地分片流程以便断点续跑。"
         ),
     },
@@ -297,15 +324,41 @@ class ProviderRegistry:
         repository: AutomationRepository,
         secrets: SecretStore,
         settings: Settings,
+        *,
+        http_transport: httpx.AsyncBaseTransport | None = None,
     ):
         self.repository = repository
         self.secrets = secrets
         self.settings = settings
+        self.http_transport = http_transport
 
     def ensure_environment_profiles(self) -> None:
-        if self.repository.list_provider_profiles():
-            return
-        ai = self.repository.create_provider_profile(
+        profiles = self.repository.list_provider_profiles()
+
+        def ensure(match: Callable[[dict[str, Any]], bool], values: dict[str, Any]) -> dict[str, Any]:
+            existing = next((profile for profile in profiles if match(profile)), None)
+            if existing is not None:
+                return existing
+            created = self.repository.create_provider_profile(values)
+            profiles.append(created)
+            return created
+
+        local_ai = ensure(
+            lambda item: item.get("adapter") == "local_rule",
+            {
+                "name": "本地规则引擎",
+                "vendor": "local_rule",
+                "adapter": "local_rule",
+                "base_url": "",
+                "default_model": "transparent-rules-v1",
+                "capabilities": ["structured_generation", "chat_analysis"],
+                "external": False,
+                "enabled": True,
+                "implementation_status": "tested",
+            },
+        )
+        ai = ensure(
+            lambda item: item.get("name") == "环境变量 · AI",
             {
                 "name": "环境变量 · AI",
                 "vendor": self.settings.ai_provider,
@@ -315,9 +368,10 @@ class ProviderRegistry:
                 "default_model": self.settings.ai_model,
                 "capabilities": ["structured_generation", "chat_analysis"],
                 "external": True,
-            }
+            },
         )
-        asr = self.repository.create_provider_profile(
+        asr = ensure(
+            lambda item: item.get("name") == "环境变量 · ASR",
             {
                 "name": "环境变量 · ASR",
                 "vendor": self.settings.asr_provider,
@@ -327,9 +381,10 @@ class ProviderRegistry:
                 "default_model": self.settings.asr_model,
                 "capabilities": ["audio_transcription", "segment_timestamps"],
                 "external": True,
-            }
+            },
         )
-        embedding = self.repository.create_provider_profile(
+        embedding = ensure(
+            lambda item: item.get("adapter") == "hash",
             {
                 "name": "本地 Hash Embedding",
                 "vendor": "local_hash",
@@ -337,9 +392,10 @@ class ProviderRegistry:
                 "default_model": "hash-96",
                 "capabilities": ["embeddings"],
                 "external": False,
-            }
+            },
         )
-        local_asr = self.repository.create_provider_profile(
+        local_asr = ensure(
+            lambda item: item.get("adapter") == WHISPER_CPP_ADAPTER,
             {
                 "name": "本地 whisper.cpp",
                 "vendor": "local_whisper_cpp",
@@ -350,19 +406,75 @@ class ProviderRegistry:
                 "external": False,
                 "enabled": True,
                 "implementation_status": "local_runtime_required",
-            }
+            },
         )
-        self.repository.set_provider_default("ai", ai["id"])
-        # 本地 whisper.cpp 就绪时优先本地转写：不外发、无需逐次授权。
-        self.repository.set_provider_default(
-            "asr", local_asr["id"] if self.local_asr_status()["ready"] else asr["id"]
+        defaults = self.repository.get_provider_defaults()
+        if "ai" not in defaults:
+            environment_ai_ready = bool(
+                self.settings.api_key or self.secrets.resolve(None, "env:OPENAI_API_KEY")
+            )
+            self.repository.set_provider_default(
+                "ai", ai["id"] if environment_ai_ready else local_ai["id"]
+            )
+        if "asr" not in defaults:
+            # 本地 whisper.cpp 就绪时优先本地转写：不外发、无需逐次授权。
+            self.repository.set_provider_default(
+                "asr", local_asr["id"] if self.local_asr_status(local_asr)["ready"] else asr["id"]
+            )
+        if "embedding" not in defaults:
+            self.repository.set_provider_default("embedding", embedding["id"])
+
+    def local_whisper_profile(self) -> dict[str, Any] | None:
+        """Return the configured local CLI profile, preferring the active ASR route."""
+
+        defaults = self.repository.get_provider_defaults()
+        active = defaults.get("asr")
+        if active and active.get("adapter") == WHISPER_CPP_ADAPTER:
+            return active
+        return next(
+            (
+                profile
+                for profile in self.repository.list_provider_profiles()
+                if profile.get("adapter") == WHISPER_CPP_ADAPTER
+            ),
+            None,
         )
-        self.repository.set_provider_default("embedding", embedding["id"])
+
+    def active_local_model_filename(self) -> str | None:
+        active = self.repository.get_provider_defaults().get("asr")
+        if not active or active.get("adapter") != WHISPER_CPP_ADAPTER:
+            return None
+        return (active.get("default_model") or "").strip() or None
+
+    def activate_local_model(self, file_name: str) -> dict[str, Any]:
+        """Select a verified model and make the local CLI the explicit ASR route."""
+
+        profile = self.local_whisper_profile()
+        if profile is None:
+            profile = self.repository.create_provider_profile(
+                {
+                    "name": "本地 whisper.cpp",
+                    "vendor": "local_whisper_cpp",
+                    "adapter": WHISPER_CPP_ADAPTER,
+                    "base_url": "",
+                    "default_model": file_name,
+                    "capabilities": ["audio_transcription", "segment_timestamps"],
+                    "external": False,
+                    "enabled": True,
+                    "implementation_status": "local_runtime_required",
+                }
+            )
+        else:
+            profile = self.repository.update_provider_profile(
+                profile["id"], {"default_model": file_name, "enabled": True}
+            )
+        self.repository.set_provider_default("asr", profile["id"])
+        return profile
 
     def whisper_runtime(self, profile: dict[str, Any] | None = None) -> WhisperCppRuntime:
         """Profile 可覆盖可执行文件路径与模型；其余运行参数由服务端环境统一控制。"""
 
-        profile = profile or {}
+        profile = profile if profile is not None else self.local_whisper_profile() or {}
         return WhisperCppRuntime(
             binary_path=(profile.get("base_url") or "").strip() or self.settings.local_asr_binary,
             model=(profile.get("default_model") or "").strip() or self.settings.local_asr_model,
@@ -377,6 +489,7 @@ class ProviderRegistry:
     def local_asr_status(self, profile: dict[str, Any] | None = None) -> dict[str, Any]:
         """报告本地 whisper.cpp 的真实就绪情况，不猜测、不夸大。"""
 
+        profile = profile if profile is not None else self.local_whisper_profile()
         runtime = self.whisper_runtime(profile)
         binary = resolve_executable(runtime.binary_path)
         model = resolve_model_path(runtime.model, runtime.model_dir)
@@ -395,6 +508,12 @@ class ProviderRegistry:
             "timeout_seconds": runtime.timeout_seconds,
             "ffmpeg_ready": bool(resolve_executable(runtime.ffmpeg_path)),
             "ready": bool(binary and model),
+            "profile_id": profile.get("id") if profile else None,
+            "active": bool(
+                profile
+                and self.repository.get_provider_defaults().get("asr", {}).get("id")
+                == profile.get("id")
+            ),
         }
 
     def build_local_asr(self, profile: dict[str, Any], secret: str | None) -> object:
@@ -418,7 +537,7 @@ class ProviderRegistry:
     def resolve_profile_secret(self, profile_id: str) -> tuple[dict[str, Any], str | None]:
         profile = self.repository.get_provider_profile(profile_id, include_secret=True)
         if not profile["enabled"]:
-            raise ValueError("provider profile is disabled")
+            raise ValueError("该 Provider Profile 已禁用，请先启用或选择其他 Profile。")
         secret = self.secrets.resolve(
             profile.get("credential_ciphertext"), profile.get("credential_reference")
         )
@@ -426,6 +545,8 @@ class ProviderRegistry:
 
     def build(self, profile_id: str) -> object:
         profile, secret = self.resolve_profile_secret(profile_id)
+        if profile["adapter"] == "local_rule":
+            return LocalRuleProvider()
         if profile["adapter"] == "hash":
             return HashEmbeddingProvider()
         if profile["adapter"] in {WHISPER_CPP_ADAPTER, LOCAL_SERVICE_ADAPTER}:
@@ -436,24 +557,30 @@ class ProviderRegistry:
             )
         return OpenAICompatibleProvider(
             secret,
-            profile["base_url"],
+            normalize_external_base_url(profile["base_url"]),
             profile["default_model"],
             profile["default_model"],
             profile["default_model"],
+            custom_headers=profile.get("custom_headers"),
         )
 
     def default(self, group: str) -> tuple[dict[str, Any], object]:
         defaults = self.repository.get_provider_defaults()
         if group not in defaults:
-            raise ValueError(f"no default {group} provider profile is configured")
+            raise ValueError(f"尚未为 {group} 配置默认 Provider Profile。")
         profile = defaults[group]
         return profile, self.build(profile["id"])
 
     async def test_connection(self, profile_id: str) -> dict[str, Any]:
         profile, secret = self.resolve_profile_secret(profile_id)
         started = time.monotonic()
+        request_count = 0
         try:
-            if profile["adapter"] == "hash":
+            if profile["adapter"] == "local_rule":
+                provider = LocalRuleProvider()
+                await provider.analyze_session({"title": "连接测试"}, [])
+                message = "本地规则引擎可用：零配置、无网络请求、不会外发课程资料。"
+            elif profile["adapter"] == "hash":
                 message = "本地 Hash Provider 可用"
             elif profile["adapter"] == WHISPER_CPP_ADAPTER:
                 provider = self.build_local_asr(profile, secret)
@@ -468,16 +595,83 @@ class ProviderRegistry:
                 message = await provider.health()  # type: ignore[attr-defined]
             elif profile["adapter"] == "openai_compatible":
                 if not secret:
-                    raise ValueError("credential is not configured or referenced environment variable is empty")
-                headers = {"Authorization": f"Bearer {secret}"}
-                async with httpx.AsyncClient(timeout=20) as client:
-                    response = await client.get(f"{profile['base_url'].rstrip('/')}/models", headers=headers)
-                if not response.is_success:
-                    raise ValueError(f"provider returned HTTP {response.status_code}")
-                message = "连接成功；具体模型的结构化输出与转写能力仍需实际任务验证"
+                    raise ValueError("鉴权信息未配置，或引用的环境变量为空。")
+                headers = {
+                    **validate_custom_headers(profile.get("custom_headers")),
+                    "Authorization": f"Bearer {secret}",
+                }
+                async with httpx.AsyncClient(timeout=20, transport=self.http_transport) as client:
+                    base_url = normalize_external_base_url(profile["base_url"])
+                    response = await client.get(f"{base_url}/models", headers=headers)
+                    request_count += 1
+                    self._require_success(response, "模型列表")
+                    model_payload = self._json_object(response, "模型列表")
+                    model_ids = {
+                        item.get("id")
+                        for item in model_payload.get("data", [])
+                        if isinstance(item, dict) and isinstance(item.get("id"), str)
+                    }
+                    model = profile.get("default_model", "").strip()
+                    if not model:
+                        raise ValueError("鉴权成功，但 Profile 没有填写模型 ID。")
+                    if model not in model_ids:
+                        raise ValueError(f"鉴权成功，但模型列表中找不到“{model}”。请核对模型 ID。")
+
+                    capabilities = set(profile.get("capabilities", []))
+                    verified: list[str] = []
+                    if capabilities.intersection({"structured_generation", "chat_analysis"}):
+                        response = await client.post(
+                            f"{base_url}/chat/completions",
+                            headers=headers,
+                            json={
+                                "model": model,
+                                "messages": [{"role": "user", "content": "只回复 OK"}],
+                                "max_tokens": 8,
+                            },
+                        )
+                        request_count += 1
+                        self._require_success(response, "文本生成能力")
+                        payload = self._json_object(response, "文本生成能力")
+                        if not isinstance(payload.get("choices"), list) or not payload["choices"]:
+                            raise ValueError("文本生成端点成功响应，但没有返回 choices。")
+                        verified.append("文本生成")
+                    if "embeddings" in capabilities:
+                        response = await client.post(
+                            f"{base_url}/embeddings",
+                            headers=headers,
+                            json={"model": model, "input": ["KnowledgeDebt 连接测试"]},
+                        )
+                        request_count += 1
+                        self._require_success(response, "向量能力")
+                        payload = self._json_object(response, "向量能力")
+                        if not isinstance(payload.get("data"), list) or not payload["data"]:
+                            raise ValueError("向量端点成功响应，但没有返回 data。")
+                        verified.append("向量")
+                    if capabilities.intersection(
+                        {"audio_transcription", "async_audio_transcription"}
+                    ):
+                        response = await client.post(
+                            f"{base_url}/audio/transcriptions",
+                            headers=headers,
+                            data={"model": model, "response_format": "verbose_json"},
+                            files={"file": ("connection-test.wav", self._silent_wav(), "audio/wav")},
+                        )
+                        request_count += 1
+                        self._require_success(response, "语音转写能力")
+                        payload = self._json_object(response, "语音转写能力")
+                        if "text" not in payload and not isinstance(payload.get("segments"), list):
+                            raise ValueError("转写端点成功响应，但没有返回 text 或 segments。")
+                        verified.append("语音转写")
+                if not verified:
+                    raise ValueError("鉴权和模型存在性已验证，但 Profile 没有声明可测试的能力。")
+                message = (
+                    f"鉴权、模型“{model}”和{'、'.join(verified)}最小请求均通过"
+                    f"（共 {request_count} 次请求）。"
+                )
             else:
                 raise ValueError("该原生适配器尚未完成真实验证，不能执行误导性的连接测试")
         except Exception as exc:
+            message = self._friendly_connection_error(exc)
             self.repository.log_provider_call(
                 {
                     "operation": "provider_connection_test",
@@ -486,12 +680,12 @@ class ProviderRegistry:
                     "model": profile.get("default_model"),
                     "status": "failed",
                     "duration_ms": int((time.monotonic() - started) * 1000),
-                    "request_count": 1,
+                    "request_count": max(1, request_count),
                     "cost_known": False,
                     "error_type": type(exc).__name__,
                 }
             )
-            return self.repository.update_provider_test(profile_id, "failed", str(exc))
+            return self.repository.update_provider_test(profile_id, "failed", message)
         self.repository.log_provider_call(
             {
                 "operation": "provider_connection_test",
@@ -500,8 +694,51 @@ class ProviderRegistry:
                 "model": profile.get("default_model"),
                 "status": "succeeded",
                 "duration_ms": int((time.monotonic() - started) * 1000),
-                "request_count": 1,
+                "request_count": max(1, request_count),
                 "cost_known": False,
             }
         )
         return self.repository.update_provider_test(profile_id, "succeeded", message)
+
+    @staticmethod
+    def _require_success(response: httpx.Response, operation: str) -> None:
+        if response.is_success:
+            return
+        if response.status_code in {401, 403}:
+            raise ValueError(f"{operation}鉴权失败（HTTP {response.status_code}），请检查 API Key。")
+        if response.status_code == 404:
+            raise ValueError(f"{operation}端点不存在（HTTP 404），请检查 Base URL 和能力类型。")
+        if response.status_code == 429:
+            raise ValueError(f"{operation}被限流或配额不足（HTTP 429），请稍后重试或检查余额。")
+        raise ValueError(f"{operation}返回 HTTP {response.status_code}，连接测试未通过。")
+
+    @staticmethod
+    def _json_object(response: httpx.Response, operation: str) -> dict[str, Any]:
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ValueError(f"{operation}返回的不是 JSON，可能填写了错误的 Base URL。") from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"{operation}返回格式不兼容。")
+        return payload
+
+    @staticmethod
+    def _friendly_connection_error(exc: Exception) -> str:
+        if isinstance(exc, httpx.TimeoutException):
+            return "连接测试超时。请检查网络、Base URL 和服务状态后重试。"
+        if isinstance(exc, httpx.ConnectError):
+            return "无法连接 Provider。请检查网络、Base URL、TLS 证书和本地代理设置。"
+        if isinstance(exc, httpx.RequestError):
+            return "Provider 请求没有完成。请检查网络与 Base URL 后重试。"
+        message = str(exc).strip()
+        return message or "连接测试失败，Provider 没有返回可用结果。"
+
+    @staticmethod
+    def _silent_wav() -> bytes:
+        output = io.BytesIO()
+        with wave.open(output, "wb") as audio:
+            audio.setnchannels(1)
+            audio.setsampwidth(2)
+            audio.setframerate(16_000)
+            audio.writeframes(b"\x00\x00" * 8_000)
+        return output.getvalue()

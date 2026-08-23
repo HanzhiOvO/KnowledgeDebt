@@ -36,7 +36,7 @@ class ZJSUConnector:
 
     def begin_login(self, mode: str) -> dict[str, Any]:
         if mode not in {"account", "sso", "qr"}:
-            raise ValueError("login mode must be account, sso or qr")
+            raise ValueError("登录方式只支持账号、SSO 或扫码。")
         return {
             "state": "fixture_required",
             "mode": mode,
@@ -74,10 +74,10 @@ class ZJSUFixtureParser:
         term = payload.get("term") or {}
         for key in ("name", "starts_on", "ends_on"):
             if not term.get(key):
-                raise ValueError(f"fixture term.{key} is required")
+                raise ValueError(f"课表样例缺少 term.{key}。")
         courses = payload.get("courses")
         if not isinstance(courses, list):
-            raise ValueError("fixture courses must be a list")
+            raise ValueError("课表样例的 courses 必须是数组。")
         period_times = self._period_times(payload.get("period_times"))
         parsed_rules: list[dict[str, Any]] = []
         parsed_occurrences: list[dict[str, Any]] = []
@@ -93,12 +93,12 @@ class ZJSUFixtureParser:
         name = str(item.get("course_name") or "").strip()
         external_id = str(item.get("external_id") or "").strip()
         if not name or not external_id:
-            raise ValueError(f"courses[{index}] requires course_name and external_id")
+            raise ValueError(f"courses[{index}] 必须包含 course_name 和 external_id。")
         weekday = int(item.get("weekday", 0))
         start_period = int(item.get("start_period", 0))
         end_period = int(item.get("end_period", 0))
         if weekday not in range(1, 8) or start_period < 1 or end_period < start_period:
-            raise ValueError(f"courses[{index}] has invalid weekday or periods")
+            raise ValueError(f"courses[{index}] 的星期或节次无效。")
         weeks, odd_even = self._weeks(item.get("weeks"), item.get("odd_even"))
         return {
             "course_name": name,
@@ -146,7 +146,8 @@ class ZJSUFixtureParser:
                     "status": "scheduled",
                     "source_kind": "regular",
                     "rule_external_id": rule["external_id"],
-                    "external_id": f"{rule['external_id']}:{day.isoformat()}:{rule['start_period']}-{rule['end_period']}",
+                    # 节次变化仍代表同一门课的同一天课堂；稳定 ID 让快照把它识别为修改而非删除+新增。
+                    "external_id": f"{rule['external_id']}:{day.isoformat()}",
                 }
             )
         return occurrences
@@ -156,11 +157,11 @@ class ZJSUFixtureParser:
     ) -> dict[str, Any]:
         for key in ("rule_external_id", "date", "external_id"):
             if not item.get(key):
-                raise ValueError(f"adjustment.{key} is required")
+                raise ValueError(f"调课记录缺少 adjustment.{key}。")
         status = item.get("status", "scheduled")
         source_kind = item.get("source_kind", "adjustment")
         if status not in {"scheduled", "cancelled"} or source_kind not in {"adjustment", "makeup"}:
-            raise ValueError("adjustment status/source_kind is invalid")
+            raise ValueError("调课记录的 status 或 source_kind 无效。")
         start_period = int(item.get("start_period", 1))
         end_period = int(item.get("end_period", start_period))
         timezone = ZoneInfo(item.get("timezone", "Asia/Shanghai"))
@@ -191,14 +192,14 @@ class ZJSUFixtureParser:
         result: dict[int, tuple[str, str]] = {}
         for key, value in values.items():
             if not isinstance(value, list) or len(value) != 2:
-                raise ValueError("period_times values must be [start, end]")
+                raise ValueError("period_times 的每一项必须是 [开始时间, 结束时间]。")
             result[int(key)] = (value[0], value[1])
         return result
 
     @staticmethod
     def _clock(period_times: dict[int, tuple[str, str]], period: int, index: int) -> time:
         if period not in period_times:
-            raise ValueError(f"fixture has no time definition for period {period}")
+            raise ValueError(f"课表样例没有定义第 {period} 节的时间。")
         return time.fromisoformat(period_times[period][index])
 
     @staticmethod
@@ -214,9 +215,9 @@ class ZJSUFixtureParser:
                 weeks.extend(range(first, last + 1))
             weeks = sorted(set(weeks))
         else:
-            raise ValueError("weeks must be a list or a string such as 1-16周(双)")
+            raise ValueError("weeks 必须是数组，或类似“1-16周(双)”的字符串。")
         if not weeks or any(item < 1 or item > 60 for item in weeks):
-            raise ValueError("weeks must contain values between 1 and 60")
+            raise ValueError("weeks 中的周次必须在 1 到 60 之间。")
         if odd_even not in {"all", "odd", "even"}:
-            raise ValueError("odd_even must be all, odd or even")
+            raise ValueError("odd_even 只支持 all、odd 或 even。")
         return weeks, odd_even

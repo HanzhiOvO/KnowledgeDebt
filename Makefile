@@ -1,10 +1,10 @@
-.PHONY: help start dev backend-install backend-run backend-test backend-lint migrate web-install web-run web-test legacy-client-get legacy-client-run legacy-client-test compose-up compose-down verify smoke-local-asr
+.PHONY: help start dev backend-install backend-run backend-test backend-lint migrate web-install web-run web-test legacy-client-get legacy-client-run legacy-client-test compose-up compose-down verify smoke-local-asr native-macos
 
 MEDIA ?=
 SECONDS ?= 60
 
 help:
-	@echo "KnowledgeDebt 常用命令"
+	@echo "知债 KnowledgeDebt 常用命令"
 	@echo "  make start           自动补齐依赖并同时启动 Web 与 API"
 	@echo "  make dev             使用现有依赖同时启动 FastAPI 与 Next.js"
 	@echo "  make verify          运行后端检查、测试与 Web 生产构建"
@@ -13,6 +13,7 @@ help:
 	@echo "  make migrate         执行 Alembic 数据库迁移"
 	@echo "  make compose-up      构建并启动 Docker Compose 服务"
 	@echo "  make smoke-local-asr MEDIA=录音.aac [SECONDS=60]  本地 ASR 真机速度/质量测试"
+	@echo "  make native-macos    构建并冒烟验证 Apple Silicon .app / .dmg"
 
 start:
 	./start.sh
@@ -40,7 +41,7 @@ web-install:
 	cd web && npm ci
 
 web-run:
-	cd web && npm run dev
+	cd web && npm run dev -- --hostname 127.0.0.1
 
 web-test:
 	cd web && npm run lint && npm run build
@@ -63,5 +64,8 @@ compose-down:
 smoke-local-asr:
 	@test -n "$(MEDIA)" || { echo "用法：make smoke-local-asr MEDIA=录音.aac [SECONDS=60]"; exit 1; }
 	.venv/bin/python backend/scripts/local_asr_smoke.py "$(MEDIA)" --seconds $(SECONDS)
+
+native-macos:
+	./packaging/macos/build.sh
 
 verify: backend-lint backend-test web-test

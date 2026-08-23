@@ -16,8 +16,8 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "KnowledgeDebt · 自动化课程工作台",
-    template: "%s · KnowledgeDebt",
+    default: "知债 KnowledgeDebt · 自动化课程工作台",
+    template: "%s · 知债 KnowledgeDebt",
   },
   description: "面向大学生的本地优先课程恢复系统：从课表、课堂证据到真正掌握。",
 };

@@ -2,6 +2,7 @@ import "server-only";
 
 import type {
   ApiResult,
+  ApplicationSettings,
   AssessmentQuestion,
   Course,
   Debt,
@@ -63,6 +64,10 @@ export function getDebts() {
 
 export function getProviderSettings() {
   return request<ProviderSettings>("/settings/provider");
+}
+
+export function getApplicationSettings() {
+  return request<ApplicationSettings>("/settings/application");
 }
 
 export function getProviderUsage() {

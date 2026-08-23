@@ -9,5 +9,7 @@ pymupdf>=1.26,<2
 python-pptx>=1.0,<2
 SQLAlchemy>=2.0,<3
 alembic>=1.16,<2
-psycopg[binary]>=3.2,<4
+psycopg>=3.2,<4
+# Windows 的默认 SQLite 开发路径无需 PostgreSQL 二进制驱动；服务器/CI 可用 requirements-postgres.txt。
+psycopg[binary]>=3.2,<4; platform_system != "Windows"
 cryptography>=45,<47

@@ -1,17 +1,19 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
+import { BrowserRecorder } from "@/features/sessions/browser-recorder";
 import { mutate, publicApiUrl } from "@/lib/client-api";
 import type { ConsentManifest, Job, Resource, ResourceAutomation } from "@/types/domain";
 
 const transcriptionLabels: Record<string, string> = {
   saved: "已保存",
-  preparing: "准备中",
+  preparing: "正在整理",
   awaiting_consent: "等待授权",
-  queued: "已排队",
-  transcribing: "转写中",
+  awaiting_configuration: "等待配置转写服务",
+  queued: "等待转写",
+  transcribing: "正在转写",
   partial: "部分完成",
   transcribed: "已转写",
   failed: "转写失败",
@@ -61,6 +63,29 @@ export function ResourcePanel({ sessionId, resources, mode = "resources" }: { se
     }
   }
 
+  async function addLink(formData: FormData) {
+    setBusy(true);
+    setError("");
+    try {
+      await mutate(`/sessions/${sessionId}/resources/link`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: formData.get("name"),
+          url: formData.get("url"),
+          notes: formData.get("notes") || "",
+          evidence_level: formData.get("evidence_level") || "supplementary",
+          resource_type: "link",
+        }),
+      });
+      router.refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "链接保存失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="resource-layout">
       <div className="resource-list">
@@ -68,12 +93,13 @@ export function ResourcePanel({ sessionId, resources, mode = "resources" }: { se
         {visible.length ? visible.map((resource) => (
           <article className="resource-row detailed" key={resource.id}>
             <span className="file-icon">{resource.type.slice(0, 3).toUpperCase()}</span>
-            <span className="resource-main"><strong>{resource.name}</strong><small>{resource.evidence_level} · {resource.duration_seconds ? `${Math.round(resource.duration_seconds / 60)} 分钟` : resource.upload_state}</small>{resource.automation?.failure_reason ? <span className="resource-error">{resource.automation.failure_reason}</span> : null}</span>
+            <span className="resource-main"><strong>{resource.name}</strong><small>{resource.evidence_level} · {resource.external_url ? "外部链接" : resource.duration_seconds ? `${Math.round(resource.duration_seconds / 60)} 分钟` : resource.upload_state}</small>{resource.external_url ? <span className="resource-actions"><a className="text-button" href={resource.external_url} target="_blank" rel="noreferrer">打开链接</a></span> : null}{resource.automation?.failure_reason ? <span className="resource-error">{resource.automation.failure_reason}</span> : null}</span>
             {mode === "media" ? <TranscriptionControl key={`${resource.id}:${resource.automation?.transcription_state}:${resource.automation?.last_job_id ?? "none"}`} sessionId={sessionId} resource={resource} /> : <span className="quality-chip">{resource.chunks?.length ? `${resource.chunks.length} 个内容块` : `${Math.round(resource.coverage * resource.quality * resource.relevance * 100)}% 有效`}</span>}
           </article>
         )) : <p className="muted">{mode === "media" ? "还没有录音或视频。" : "尚无资料。Session 仍然有效，你可以稍后补充。"}</p>}
         {mode === "media" ? <TranscriptPreview resources={visible} /> : null}
       </div>
+      <div className="resource-side-panel">
       <form className="upload-card" action={upload}>
         <span className="eyebrow">{mode === "media" ? "ADD RECORDING" : "ADD EVIDENCE"}</span>
         <h3>{mode === "media" ? "上传录音或视频" : "上传课堂资料"}</h3>
@@ -87,13 +113,23 @@ export function ResourcePanel({ sessionId, resources, mode = "resources" }: { se
           <label>录音终点（秒）<input name="end_offset" inputMode="decimal" min="0" type="number" placeholder="3600" /></label>
         </div>
         <label className="recording-range">课堂总时长（秒）<input name="session_duration" inputMode="decimal" min="1" type="number" placeholder="6000" /></label>
-        <label className="checkbox-row"><input defaultChecked name="auto_transcribe" type="checkbox" value="true" />保存后自动转写</label></> : null}
+        <p className="upload-preference-note">保存后的转写行为遵循“设置 → 应用偏好”；默认自动转写，关闭后只保存原文件。</p></> : null}
         <input type="hidden" name="coverage" value="1" />
         <input type="hidden" name="quality" value="1" />
         <input type="hidden" name="relevance" value="1" />
         {error ? <p className="form-error">{error}</p> : null}
         <button className="button primary" disabled={busy}>{busy ? "上传中…" : "上传到本地存储"}</button>
       </form>
+      {mode === "resources" ? <form className="upload-card" action={addLink}>
+        <span className="eyebrow">ADD LINK</span>
+        <h3>保存课程链接</h3>
+        <label>名称<input name="name" maxLength={200} placeholder="课程主页或补充阅读" required /></label>
+        <label>链接<input name="url" inputMode="url" placeholder="https://…" type="url" required /></label>
+        <label>说明<input name="notes" maxLength={500} placeholder="为什么与本节课相关（可选）" /></label>
+        <label>证据级别<select name="evidence_level" defaultValue="supplementary"><option value="official">课程官方</option><option value="supplementary">补充资料</option></select></label>
+        <button className="button secondary" disabled={busy}>{busy ? "保存中…" : "保存链接"}</button>
+      </form> : null}
+      </div>
       {mode === "media" ? <BrowserRecorder sessionId={sessionId} onSaved={() => router.refresh()} /> : null}
     </div>
   );
@@ -207,104 +243,4 @@ function TranscriptPreview({ resources }: { resources: Resource[] }) {
   const segments = resources.flatMap((resource) => resource.transcript_segments ?? []);
   if (!segments.length) return null;
   return <div className="transcript-preview"><div className="section-heading"><div><span className="eyebrow">TRANSCRIPT</span><h3>转写片段</h3></div><span className="count-chip">{segments.length}</span></div>{segments.slice(0, 12).map((segment) => <div className="transcript-line" key={segment.id}><time>{Math.floor(segment.global_start / 60)}:{String(Math.floor(segment.global_start % 60)).padStart(2, "0")}</time><p>{segment.text}</p></div>)}</div>;
-}
-
-function BrowserRecorder({ sessionId, onSaved }: { sessionId: string; onSaved: () => void }) {
-  const recorder = useRef<MediaRecorder | null>(null);
-  const chunks = useRef<Blob[]>([]);
-  const startedAt = useRef(0);
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [supported] = useState(
-    () => typeof window !== "undefined" && "MediaRecorder" in window && Boolean(navigator.mediaDevices?.getUserMedia),
-  );
-  const [phase, setPhase] = useState<"idle" | "recording" | "saving" | "save_failed">("idle");
-  const [seconds, setSeconds] = useState(0);
-  const [error, setError] = useState("");
-  const [startMinute, setStartMinute] = useState(0);
-  const [sessionMinutes, setSessionMinutes] = useState(100);
-  const pending = useRef<{ blob: Blob; duration: number; filename: string } | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (timer.current) clearInterval(timer.current);
-      recorder.current?.stream.getTracks().forEach((track) => track.stop());
-    };
-  }, []);
-
-  async function savePending() {
-    if (!pending.current) return;
-    setPhase("saving");
-    setError("");
-    const { blob, duration, filename } = pending.current;
-    const form = new FormData();
-    form.append("file", blob, filename);
-    form.append("resource_type", "audio");
-    form.append("evidence_level", "classroom");
-    form.append("duration_seconds", String(duration));
-    form.append("start_offset", String(startMinute * 60));
-    form.append("end_offset", String(startMinute * 60 + duration));
-    form.append("session_duration", String(sessionMinutes * 60));
-    form.append("coverage", "1");
-    form.append("quality", "0.9");
-    form.append("relevance", "1");
-    form.append("auto_transcribe", "true");
-    try {
-      const response = await fetch(`${publicApiUrl}/sessions/${sessionId}/resources/upload`, { method: "POST", body: form });
-      const body = (await response.json().catch(() => ({}))) as { detail?: string };
-      if (!response.ok) throw new Error(body.detail ?? "录音保存失败");
-      pending.current = null;
-      setPhase("idle");
-      onSaved();
-    } catch (reason) {
-      setPhase("save_failed");
-      setError(reason instanceof Error ? reason.message : "保存失败；录音仍在内存中，可以重试");
-    }
-  }
-
-  async function start() {
-    if (phase !== "idle") return;
-    setError("");
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const next = new MediaRecorder(stream);
-      chunks.current = [];
-      next.ondataavailable = (event) => { if (event.data.size) chunks.current.push(event.data); };
-      next.onstop = () => {
-        const duration = Math.max(1, (Date.now() - startedAt.current) / 1000);
-        const blob = new Blob(chunks.current, { type: next.mimeType || "audio/webm" });
-        pending.current = { blob, duration, filename: `browser-${new Date().toISOString().replaceAll(":", "-")}.webm` };
-        next.stream.getTracks().forEach((track) => track.stop());
-        void savePending();
-      };
-      recorder.current = next;
-      startedAt.current = Date.now();
-      setSeconds(0);
-      next.start(5000);
-      timer.current = setInterval(() => setSeconds(Math.floor((Date.now() - startedAt.current) / 1000)), 1000);
-      setPhase("recording");
-    } catch {
-      recorder.current?.stream.getTracks().forEach((track) => track.stop());
-      setError("无法访问麦克风，请检查浏览器权限。桌面端更推荐先用系统录音后上传。 ");
-    }
-  }
-
-  function stop() {
-    if (phase !== "recording") return;
-    if (timer.current) clearInterval(timer.current);
-    setPhase("saving");
-    recorder.current?.stop();
-  }
-
-  return (
-    <section className="recorder-card">
-      <span className="eyebrow">BROWSER RECORDER</span>
-      <h3>{phase === "recording" ? `正在录音 ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}` : phase === "saving" ? "正在可靠保存…" : phase === "save_failed" ? "保存失败，录音仍在内存" : "浏览器现场录音"}</h3>
-      <p>停止后先保存原始媒体，再由后台继续转写。保存完成后可以安全离开页面。</p>
-      {phase === "idle" ? <div className="form-pair recorder-fields"><label>当前课堂分钟<input type="number" min="0" value={startMinute} onChange={(event) => setStartMinute(Number(event.target.value))} /></label><label>课堂总分钟<input type="number" min="1" value={sessionMinutes} onChange={(event) => setSessionMinutes(Number(event.target.value))} /></label></div> : null}
-      {error ? <p className="form-error" role="alert">{error}</p> : null}
-      <button className={phase === "recording" ? "button danger" : "button secondary inverted"} disabled={!supported || phase === "saving" || (phase === "idle" && sessionMinutes <= startMinute)} onClick={phase === "recording" ? stop : phase === "save_failed" ? () => void savePending() : start} type="button">
-        {phase === "recording" ? "停止并保存" : phase === "saving" ? "保存中…" : phase === "save_failed" ? "重新保存原录音" : supported ? "开始录音" : "当前浏览器不支持"}
-      </button>
-    </section>
-  );
 }

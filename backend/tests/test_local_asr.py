@@ -169,6 +169,13 @@ def test_local_endpoint_guard_accepts_private_hosts_and_refuses_public(monkeypat
             assert_local_endpoint(refused)
     with pytest.raises(ValueError, match="Base URL"):
         assert_local_endpoint("")
+    for unsafe in (
+        "http://user:password@127.0.0.1:8080/v1",
+        "http://127.0.0.1:8080/v1?token=plaintext",
+        "http://127.0.0.1:8080/v1#secret",
+    ):
+        with pytest.raises(ValueError, match="用户名或密码|查询参数或片段"):
+            assert_local_endpoint(unsafe)
 
 
 def test_whisper_cpp_parses_real_json_offsets_and_never_touches_source(tmp_path: Path, monkeypatch):
@@ -378,6 +385,21 @@ class _WhisperServerHandler(_VerboseJSONHandler):
             self.send_error(404)
 
 
+class _SensitiveFailureHandler(BaseHTTPRequestHandler):
+    def do_POST(self):  # noqa: N802 - http.server 约定
+        length = int(self.headers.get("content-length", "0"))
+        self.rfile.read(length)
+        body = b"authorization=Bearer sensitive-service-token"
+        self.send_response(500)
+        self.send_header("content-type", "text/plain")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_args):
+        return
+
+
 def test_local_service_provider_talks_to_loopback_and_parses_segments(tmp_path: Path):
     server = ThreadingHTTPServer(("127.0.0.1", 0), _VerboseJSONHandler)
     Thread(target=server.serve_forever, daemon=True).start()
@@ -479,6 +501,26 @@ def test_local_service_provider_supports_whisper_cpp_inference_path(tmp_path: Pa
 def test_local_service_provider_refuses_public_base_url():
     with pytest.raises(ValueError, match="公网地址"):
         LocalOpenAICompatibleASRProvider("https://api.openai.com/v1", "whisper-1")
+
+
+def test_local_service_failure_does_not_persist_response_secrets(tmp_path: Path):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _SensitiveFailureHandler)
+    Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        provider = LocalOpenAICompatibleASRProvider(
+            f"http://127.0.0.1:{server.server_port}", "whisper-small"
+        )
+        chunk = wav_chunk(tmp_path / "chunk-0000.wav")
+        with pytest.raises(ProviderRequestError) as captured:
+            asyncio.run(provider.transcribe(str(chunk), "audio/wav"))
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    message = str(captured.value)
+    assert "HTTP 500" in message
+    assert "sensitive-service-token" not in message
+    assert "响应正文未写入任务记录" in message
 
 
 def local_settings(tmp_path: Path, **overrides) -> Settings:

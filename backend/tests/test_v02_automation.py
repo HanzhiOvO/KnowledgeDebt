@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -24,11 +25,11 @@ def test_plaintext_provider_secret_is_refused_without_encryption_key(monkeypatch
     monkeypatch.setenv("KD_TEST_PROVIDER_KEY", "only-in-process")
     store = SecretStore(None)
 
-    with pytest.raises(ValueError, match="Refusing to store a plaintext credential"):
+    with pytest.raises(ValueError, match="拒绝明文保存"):
         store.encrypt("must-not-hit-the-database")
 
     assert store.resolve(None, "env:KD_TEST_PROVIDER_KEY") == "only-in-process"
-    with pytest.raises(ValueError, match="Only env:VARIABLE"):
+    with pytest.raises(ValueError, match="只支持 env:VARIABLE"):
         store.resolve(None, "plain-reference")
 
 
@@ -174,7 +175,7 @@ def test_occurrence_materialization_is_lazy_cancel_safe_and_idempotent(tmp_path:
     )
 
     assert database.list_sessions() == []
-    with pytest.raises(ValueError, match="cancelled occurrence"):
+    with pytest.raises(ValueError, match="已停课"):
         automation.materialize_occurrence(cancelled["id"], "opened")
 
     first = automation.materialize_occurrence(scheduled["id"], "opened")
@@ -272,6 +273,7 @@ def test_transcription_retry_keeps_successful_chunks_and_global_timestamps(tmp_p
         mime_type="application/octet-stream",
         local_path=str(media_path),
         duration_seconds=120,
+        start_offset=300,
     )
     automation.ensure_resource_automation(resource["id"])
     provider = FlakyChunkProvider()
@@ -305,8 +307,11 @@ def test_transcription_retry_keeps_successful_chunks_and_global_timestamps(tmp_p
     assert retry_result["status"] == "succeeded"
     assert provider.calls == ["chunk-0000.flac", "chunk-0001.flac", "chunk-0001.flac"]
     segments = database.list_transcript_segments(resource["id"])
-    assert [(item["global_start"], item["global_end"]) for item in segments] == [(1, 3), (61, 63)]
+    assert [(item["start_time"], item["end_time"]) for item in segments] == [(1, 3), (61, 63)]
+    assert [(item["global_start"], item["global_end"]) for item in segments] == [(301, 303), (361, 363)]
     assert automation.provider_usage()["request_count"] == 3
+    assert database.get_session(session["id"])["title"].startswith("编译原理-")
+    assert automation.session_automation(session["id"])["title_source"] == "transcript_rule"
 
 
 def test_external_transcription_creates_no_job_before_one_time_consent(tmp_path: Path):
@@ -368,3 +373,187 @@ def test_aac_without_ffmpeg_is_retained_and_reports_actionable_error(tmp_path: P
 
     assert source.read_bytes() == b"retained original aac"
     assert not (tmp_path / "chunks" / "resource-aac").exists()
+
+
+def test_unknown_duration_never_bypasses_ffprobe_or_chunk_limits(tmp_path: Path):
+    source = tmp_path / "unknown-duration.webm"
+    source.write_bytes(b"retained media with no trusted duration")
+    preparer = MediaPreparer(
+        str(tmp_path / "missing-tools" / "ffmpeg"),
+        tmp_path / "chunks",
+        1500,
+    )
+
+    with pytest.raises(FFmpegUnavailable, match="未知时长媒体"):
+        preparer.prepare("unknown-duration", source, None)
+
+    assert source.read_bytes() == b"retained media with no trusted duration"
+    assert not (tmp_path / "chunks" / "unknown-duration").exists()
+
+
+def test_ninety_minute_media_is_split_into_persistent_retryable_chunks(tmp_path: Path, monkeypatch):
+    source = tmp_path / "lecture.webm"
+    source.write_bytes(b"retained ninety minute source")
+    preparer = MediaPreparer(sys.executable, tmp_path / "chunks", 1500)
+
+    def fake_convert(source_path: Path, target: Path, start: float, duration: float | None) -> None:
+        assert source_path == source
+        target.write_bytes(f"{start}:{duration}".encode())
+
+    monkeypatch.setattr(preparer, "_convert", fake_convert)
+    chunks = preparer.prepare("ninety-minutes", source, 90 * 60 + 1)
+
+    assert len(chunks) == 4
+    assert [(item["start_seconds"], item["end_seconds"]) for item in chunks] == [
+        (0.0, 1500.0),
+        (1500.0, 3000.0),
+        (3000.0, 4500.0),
+        (4500.0, 5401),
+    ]
+    assert all(Path(item["media_path"]).read_bytes() for item in chunks)
+    assert source.read_bytes() == b"retained ninety minute source"
+
+
+def test_session_topic_candidate_uses_application_timezone_and_respects_manual_lock(tmp_path: Path):
+    database = Database(tmp_path / "topic-timezone.sqlite3")
+    automation = AutomationRepository(database)
+    automation.update_app_settings({"timezone": "Asia/Shanghai"})
+    course = database.create_course(CourseCreate(name="编译原理", semester="2026 秋"))
+    session = database.create_session(
+        course["id"],
+        SessionCreate(
+            title="编译原理-2026-09-07-待识别",
+            starts_at="2026-09-06T16:30:00+00:00",
+        ),
+    )
+    profile = {
+        "id": "local-test",
+        "name": "本地测试 ASR",
+        "default_model": "fixture",
+        "external": False,
+        "capabilities": [],
+    }
+    orchestrator = TranscriptionOrchestrator(
+        database,
+        automation,
+        LocalStorageProvider(tmp_path / "objects"),
+        lambda: (profile, FlakyChunkProvider()),
+        TwoChunkPreparer(tmp_path),
+        lambda session_id: None,
+    )
+
+    orchestrator._suggest_title(
+        session["id"], [{"text": "今天我们来学习自底向上语法分析。冲突处理"}]
+    )
+    assert database.get_session(session["id"])["title"] == "编译原理-2026-09-07-自底向上语法分析"
+    title_state = automation.session_automation(session["id"])
+    assert title_state["title_source"] == "transcript_rule"
+    assert title_state["title_confidence"] == 0.82
+    assert automation.list_review_items("pending") == []
+
+    short_session = database.create_session(
+        course["id"],
+        SessionCreate(
+            title="编译原理-2026-09-07-待识别",
+            starts_at="2026-09-06T16:30:00+00:00",
+        ),
+    )
+    orchestrator._suggest_title(short_session["id"], [{"text": "归并排序。"}])
+    review = automation.list_review_items("pending")[0]
+    assert review["proposed_value"] == "编译原理-2026-09-07-归并排序"
+    orchestrator._suggest_title(short_session["id"], [{"text": "自底向上语法分析。"}])
+    assert database.get_session(short_session["id"])["title"].endswith("待识别")
+
+    locked_session = database.create_session(
+        course["id"],
+        SessionCreate(
+            title="我手动命名的课堂",
+            starts_at="2026-09-06T16:30:00+00:00",
+        ),
+    )
+    automation.update_session_title(
+        locked_session["id"],
+        "我手动命名的课堂",
+        source="user",
+        confidence=1,
+        locked=True,
+    )
+    orchestrator._suggest_title(locked_session["id"], [{"text": "不会覆盖的主题"}])
+    assert database.get_session(locked_session["id"])["title"] == "我手动命名的课堂"
+    assert len(automation.list_review_items("pending")) == 1
+
+
+def test_restart_adopts_running_job_and_skips_persisted_successful_chunk(tmp_path: Path):
+    database = Database(tmp_path / "restart-transcription.sqlite3")
+    automation = AutomationRepository(database)
+    _, session = build_session(database)
+    media_path = tmp_path / "restart-source.bin"
+    media_path.write_bytes(b"retained source across restart")
+    resource = database.add_resource(
+        session["id"],
+        type="audio",
+        evidence_level="classroom",
+        name="restart-source.bin",
+        mime_type="application/octet-stream",
+        local_path=str(media_path),
+        duration_seconds=120,
+    )
+    automation.ensure_resource_automation(resource["id"], state="transcribing")
+    preparer = TwoChunkPreparer(tmp_path)
+    chunks = automation.replace_transcription_chunks(
+        resource["id"], preparer.prepare(resource["id"], media_path, 120)
+    )
+    automation.update_transcription_chunk(
+        chunks[0]["id"],
+        "succeeded",
+        segment_count=1,
+        segments=[{"start_time": 1, "end_time": 3, "text": "重启前已完成"}],
+    )
+    job = database.create_job(
+        "transcription",
+        session_id=session["id"],
+        resource_id=resource["id"],
+        payload={"confirmed_external_upload": False, "provider": "本地恢复测试"},
+    )
+    database.update_job(job["id"], status="running", stage="transcribing_chunk_2_of_2")
+
+    class RestartProvider:
+        requires_external_upload = False
+
+        def __init__(self):
+            self.calls: list[str] = []
+
+        async def transcribe(self, path: str, mime_type: str | None) -> list[TranscriptSegment]:
+            self.calls.append(Path(path).name)
+            return [TranscriptSegment(start_time=2, end_time=4, text="重启后继续")]
+
+    provider = RestartProvider()
+    profile = {
+        "id": None,
+        "name": "本地恢复测试",
+        "default_model": "fixture",
+        "external": False,
+        "capabilities": [],
+    }
+    restarted = TranscriptionOrchestrator(
+        database,
+        automation,
+        LocalStorageProvider(tmp_path / "objects"),
+        lambda: (profile, provider),
+        preparer,
+        lambda session_id: None,
+    )
+
+    async def resume_after_restart() -> None:
+        await restarted.adopt_unfinished()
+        await asyncio.gather(*restarted._tasks.values())
+
+    asyncio.run(resume_after_restart())
+
+    assert database.get_job(job["id"])["status"] == "succeeded"
+    assert provider.calls == ["chunk-0001.flac"]
+    assert [item["text"] for item in database.list_transcript_segments(resource["id"])] == [
+        "重启前已完成",
+        "重启后继续",
+    ]
+    assert media_path.read_bytes() == b"retained source across restart"

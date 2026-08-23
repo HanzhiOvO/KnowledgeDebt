@@ -8,6 +8,7 @@ import httpx
 from pydantic import BaseModel
 
 from ..models import EvaluationResult, QuestionDraft, ReconstructionDraft, RemediationDraft, TranscriptSegment
+from ..provider_headers import validate_custom_headers
 from .base import ProviderNotConfigured, ProviderRequestError
 
 T = TypeVar("T", bound=BaseModel)
@@ -35,19 +36,32 @@ class OpenAICompatibleProvider:
         ai_model: str,
         asr_model: str,
         embedding_model: str = "text-embedding-3-small",
+        custom_headers: dict[str, str] | None = None,
     ):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.ai_model = ai_model
         self.asr_model = asr_model
         self.embedding_model = embedding_model
+        self.custom_headers = validate_custom_headers(custom_headers)
 
     def _headers(self) -> dict[str, str]:
         if not self.api_key:
             raise ProviderNotConfigured(
                 "未配置 OPENAI_API_KEY。请在项目 .env 中填写后重启，再点击“重试”。"
             )
-        return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        return {
+            **self.custom_headers,
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+    def _multipart_headers(self) -> dict[str, str]:
+        if not self.api_key:
+            raise ProviderNotConfigured(
+                "未配置 OPENAI_API_KEY。请在项目 .env 中填写后重启，再点击“重试”。"
+            )
+        return {**self.custom_headers, "Authorization": f"Bearer {self.api_key}"}
 
     async def _structured(self, model_type: type[T], prompt: str) -> T:
         schema = model_type.model_json_schema()
@@ -70,7 +84,7 @@ class OpenAICompatibleProvider:
                     f"{self.base_url}/chat/completions", headers=self._headers(), json=fallback
                 )
             if not response.is_success:
-                raise ProviderRequestError(f"AI provider returned HTTP {response.status_code}")
+                raise ProviderRequestError(f"AI Provider 返回 HTTP {response.status_code}，请检查模型、权限或余额。")
             payload = response.json()
         content = payload["choices"][0]["message"]["content"]
         if isinstance(content, list):
@@ -165,18 +179,17 @@ JSON schema: {json.dumps(RemediationDraft.model_json_schema(), ensure_ascii=Fals
             raise ProviderNotConfigured(
                 "未配置 OPENAI_API_KEY。请在项目 .env 中填写后重启，再点击“重试”。"
             )
-        headers = {"Authorization": f"Bearer {self.api_key}"}
         file_path = Path(path)
         async with httpx.AsyncClient(timeout=600) as client:
             with file_path.open("rb") as handle:
                 response = await client.post(
                     f"{self.base_url}/audio/transcriptions",
-                    headers=headers,
+                    headers=self._multipart_headers(),
                     data={"model": self.asr_model, "response_format": "verbose_json"},
                     files={"file": (file_path.name, handle, mime_type or "application/octet-stream")},
                 )
             if not response.is_success:
-                raise ProviderRequestError(f"ASR provider returned HTTP {response.status_code}")
+                raise ProviderRequestError(f"ASR Provider 返回 HTTP {response.status_code}，请检查模型、权限或余额。")
             payload: dict[str, Any] = response.json()
         segments = payload.get("segments") or []
         if not segments:
@@ -200,6 +213,6 @@ JSON schema: {json.dumps(RemediationDraft.model_json_schema(), ensure_ascii=Fals
         async with httpx.AsyncClient(timeout=180) as client:
             response = await client.post(f"{self.base_url}/embeddings", headers=self._headers(), json=body)
             if not response.is_success:
-                raise ProviderRequestError(f"Embedding provider returned HTTP {response.status_code}")
+                raise ProviderRequestError(f"向量 Provider 返回 HTTP {response.status_code}，请检查模型、权限或余额。")
             payload = response.json()
         return [item["embedding"] for item in sorted(payload["data"], key=lambda item: item["index"])]

@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { FirstRunGuide } from "@/features/home/first-run-guide";
 import type { HomePayload, Job, ScheduleOccurrence } from "@/types/domain";
 
 const automationLabels: Record<string, string> = {
@@ -17,8 +18,19 @@ export function HomeDashboard({ home }: { home: HomePayload }) {
     month: "long",
     day: "numeric",
     weekday: "long",
-  }).format(new Date());
+    timeZone: home.timezone,
+  }).format(new Date(home.generated_at));
   const activeJobs = (home.jobs ?? []).filter((job) => ["queued", "running"].includes(job.status));
+  const now = Date.parse(home.generated_at);
+  const activeOccurrences = (home.today_occurrences ?? []).filter(
+    (occurrence) => occurrence.status !== "cancelled" && occurrence.sync_status !== "removed",
+  );
+  const currentOccurrence = activeOccurrences.find(
+    (occurrence) => Date.parse(occurrence.starts_at) <= now && Date.parse(occurrence.ends_at) > now,
+  );
+  const nextOccurrence = currentOccurrence ?? activeOccurrences.find(
+    (occurrence) => Date.parse(occurrence.starts_at) > now,
+  );
 
   return (
     <>
@@ -33,6 +45,34 @@ export function HomeDashboard({ home }: { home: HomePayload }) {
           <Link className="button primary" href="/review#inbox">＋ 快速收件</Link>
         </div>
       </header>
+
+      <FirstRunGuide state={home.onboarding} />
+
+      {nextOccurrence ? (
+        <CourseFocus
+          current={Boolean(currentOccurrence)}
+          occurrence={nextOccurrence}
+          timezone={home.timezone}
+        />
+      ) : null}
+
+      {home.active_recordings?.length ? (
+        <section aria-label="未完成录音" className="panel active-recordings-panel">
+          <div className="section-heading">
+            <div><span className="eyebrow">RECORDING SAFETY</span><h2>正在录音或等待恢复</h2></div>
+            <span className="count-chip">{home.active_recordings.length}</span>
+          </div>
+          <div className="automation-list">
+            {home.active_recordings.map((recording) => (
+              <Link className="automation-row" href={`/sessions/${recording.session_id}`} key={recording.id}>
+                <span className={`state-dot state-${recording.status}`} />
+                <span><strong>{recording.session_title}</strong><small>{recording.course_name} · {recordingStatus(recording.status)}</small></span>
+                <span aria-hidden>继续 →</span>
+              </Link>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <section className="metric-grid four" aria-label="工作台概览">
         <Metric label="今日课程" value={(home.today_occurrences ?? []).length} detail="来自当前学期课表" tone="blue" />
@@ -49,7 +89,7 @@ export function HomeDashboard({ home }: { home: HomePayload }) {
           </div>
           <div className="today-timeline">
             {(home.today_occurrences ?? []).length ? home.today_occurrences.map((occurrence) => (
-              <TodayCourse key={occurrence.id} occurrence={occurrence} />
+              <TodayCourse key={occurrence.id} occurrence={occurrence} timezone={home.timezone} />
             )) : (
               <div className="compact-empty"><span>今天没有已同步课程</span><Link href="/schedule">连接或导入课表</Link></div>
             )}
@@ -77,6 +117,16 @@ export function HomeDashboard({ home }: { home: HomePayload }) {
         </article>
       </section>
 
+      <section className="panel schedule-sync-summary" aria-label="课表同步状态">
+        <span className={`connection-orb state-${home.schedule_connection?.state ?? "disconnected"}`} />
+        <span>
+          <strong>{home.schedule_connection?.display_name ?? "浙江工商大学本科教务"}</strong>
+          <small>{home.schedule_connection?.last_synced_at ? `最近同步：${new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short", timeZone: home.timezone }).format(new Date(home.schedule_connection.last_synced_at))}` : "尚未同步；可先导入脱敏课表样例"}</small>
+        </span>
+        <span className="badge">{scheduleState(home.schedule_connection?.state)}</span>
+        <Link href="/schedule">打开课表 →</Link>
+      </section>
+
       <section className="panel recent-panel">
         <div className="section-heading">
           <div><span className="eyebrow">RECENT SESSIONS</span><h2>最近课堂</h2></div>
@@ -98,12 +148,38 @@ export function HomeDashboard({ home }: { home: HomePayload }) {
   );
 }
 
+function CourseFocus({ occurrence, current, timezone }: { occurrence: ScheduleOccurrence; current: boolean; timezone: string }) {
+  const formatter = new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: timezone,
+  });
+  const location = [occurrence.building, occurrence.room].filter(Boolean).join(" · ");
+  return (
+    <section aria-label={current ? "当前课程" : "下一节课程"} className={`panel course-focus ${current ? "is-current" : ""}`}>
+      <span className="course-focus-state"><i />{current ? "正在上课" : "下一节课"}</span>
+      <span className="course-focus-time">{formatter.format(new Date(occurrence.starts_at))}<small>— {formatter.format(new Date(occurrence.ends_at))}</small></span>
+      <span className="course-focus-copy"><strong>{occurrence.rule.course_name}</strong><small>{[location, occurrence.teacher].filter(Boolean).join(" · ") || "地点与教师待同步"}</small></span>
+      <Link className="button primary" href={occurrence.session_id ? `/sessions/${occurrence.session_id}` : "/schedule"}>{occurrence.session_id ? "进入课堂" : "在课表中打开"}</Link>
+    </section>
+  );
+}
+
+function recordingStatus(status: string) {
+  return ({ recording: "分片正在安全保存", finalizing: "正在合并并校验", failed: "保存未完成，可恢复或重试" } as Record<string, string>)[status] ?? status;
+}
+
+function scheduleState(state?: string) {
+  return ({ connected: "已连接", fixture_only: "样例导入可用", expired: "登录已过期", error: "同步失败", disconnected: "未连接" } as Record<string, string>)[state ?? "disconnected"] ?? state;
+}
+
 function Metric({ label, value, detail, tone }: { label: string; value: number; detail: string; tone: string }) {
   return <article className={`metric-card tone-${tone}`}><span>{label}</span><strong>{value}</strong><small>{detail}</small></article>;
 }
 
-function TodayCourse({ occurrence }: { occurrence: ScheduleOccurrence }) {
-  const time = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(occurrence.starts_at));
+function TodayCourse({ occurrence, timezone }: { occurrence: ScheduleOccurrence; timezone: string }) {
+  const time = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: timezone }).format(new Date(occurrence.starts_at));
   const content = (
     <>
       <time>{time}</time>

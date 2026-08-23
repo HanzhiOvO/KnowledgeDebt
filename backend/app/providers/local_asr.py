@@ -18,7 +18,7 @@ from ipaddress import ip_address, ip_network
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -49,7 +49,7 @@ class LocalASRTimeout(ProviderRequestError):
 def is_local_endpoint(base_url: str) -> bool:
     """仅当地址位于本机、私网、Tailscale 私网或局域网主机名时返回 True。"""
 
-    host = (urlparse(base_url).hostname or "").strip().lower()
+    host = (urlsplit(base_url).hostname or "").strip().lower()
     if not host:
         return False
     if host in {"localhost", "localhost.localdomain"}:
@@ -69,11 +69,25 @@ def is_local_endpoint(base_url: str) -> bool:
 def assert_local_endpoint(base_url: str) -> str:
     """校验并规范化本地 ASR 服务地址；公网地址一律拒绝，避免把外发伪装成本地。"""
 
-    normalized = (base_url or "").strip().rstrip("/")
-    if not normalized:
+    candidate = (base_url or "").strip()
+    if not candidate:
         raise ValueError("本地 ASR 服务需要 Base URL，例如 http://127.0.0.1:8080/v1")
-    if not normalized.startswith(("http://", "https://")):
+    try:
+        parsed = urlsplit(candidate)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("本地 ASR 服务的 Base URL 格式无效。") from exc
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
         raise ValueError("本地 ASR 服务的 Base URL 必须以 http:// 或 https:// 开头")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Base URL 不能包含用户名或密码；请使用加密密钥字段。")
+    if parsed.query or parsed.fragment:
+        raise ValueError("Base URL 不能包含查询参数或片段，避免把 Token 写入普通配置。")
+    if port is not None and not 1 <= port <= 65535:
+        raise ValueError("Base URL 端口必须在 1 到 65535 之间。")
+    normalized = urlunsplit(
+        (parsed.scheme.lower(), parsed.netloc, parsed.path.rstrip("/"), "", "")
+    )
     if not is_local_endpoint(normalized):
         raise ValueError(
             "该 Base URL 指向公网地址，不能声明为本地 ASR。"
@@ -404,7 +418,7 @@ class LocalOpenAICompatibleASRProvider:
                 root = await client.get(f"{self.base_url}/", headers=self._headers())
         except httpx.HTTPError as exc:
             raise ProviderRequestError(
-                f"无法连接本地 ASR 服务（{self.base_url}）：{exc}。请确认服务已启动、端口正确且在同一私网内。"
+                "无法连接本地 ASR 服务。请确认服务已启动、端口正确且在同一私网内。"
             ) from exc
         if not root.is_success:
             raise ProviderRequestError(
@@ -450,14 +464,15 @@ class LocalOpenAICompatibleASRProvider:
                     )
         except httpx.HTTPError as exc:
             raise ProviderRequestError(
-                f"本地 ASR 服务请求失败（{self.base_url}）：{exc}。原始文件与已成功分片都已保留。"
+                "本地 ASR 服务请求没有完成。请检查服务、端口和私网连接；"
+                "原始文件与已成功分片都已保留。"
             ) from exc
         if not response.is_success:
-            detail = response.text.strip()[:300]
             raise ProviderRequestError(
-                f"本地 ASR 服务返回 HTTP {response.status_code}：{detail or '无响应正文'}"
+                f"本地 ASR 服务返回 HTTP {response.status_code}。请检查该服务的模型、认证与运行状态；"
+                "响应正文未写入任务记录。"
             )
         try:
             return response.json()
         except ValueError as exc:
-            raise ProviderOutputError(f"本地 ASR 服务返回的不是 JSON：{exc}") from exc
+            raise ProviderOutputError("本地 ASR 服务返回的不是兼容 JSON，请检查服务类型和转写路径。") from exc

@@ -17,7 +17,7 @@ class LocalStorageProvider:
     def _path(self, key: str) -> Path:
         path = (self.root / key.lstrip("/")).resolve()
         if self.root not in path.parents:
-            raise ValueError("storage key escapes the configured root")
+            raise ValueError("存储路径越界，文件已拒绝写入。")
         return path
 
     def save(self, key: str, stream: BinaryIO, content_type: str | None = None) -> StoredObject:

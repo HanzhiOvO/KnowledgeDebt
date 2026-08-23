@@ -21,10 +21,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <Link className="brand" href="/" aria-label="KnowledgeDebt 首页">
-          <span className="brand-mark" aria-hidden>K</span>
+        <Link className="brand" href="/" aria-label="知债 KnowledgeDebt 首页">
+          <span className="brand-mark" aria-hidden>债</span>
           <span>
-            <strong>KnowledgeDebt</strong>
+            <strong>知债 KnowledgeDebt</strong>
             <small>自动化课程工作台 · v0.2</small>
           </span>
         </Link>

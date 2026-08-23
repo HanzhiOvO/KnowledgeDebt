@@ -60,15 +60,6 @@ export interface Resource {
   session_duration?: number | null;
   capture_range?: number[];
   chunks?: ResourceChunk[];
-  transcript_segments?: Array<{
-    id: string;
-    resource_id: string;
-    start_time: number;
-    end_time: number;
-    global_start?: number | null;
-    global_end?: number | null;
-    text: string;
-  }>;
   extracted_text?: string | null;
   coverage: number;
   quality: number;
@@ -95,6 +86,7 @@ export interface ResourceAutomation {
     | "saved"
     | "preparing"
     | "awaiting_consent"
+    | "awaiting_configuration"
     | "queued"
     | "transcribing"
     | "partial"
@@ -120,6 +112,36 @@ export interface ChunkDetail extends ResourceChunk {
     mime_type?: string | null;
   };
   preview_url?: string | null;
+}
+
+export interface RecordingSnapshot {
+  id: string;
+  session_id: string;
+  status: "recording" | "finalizing" | "failed" | "completed" | "abandoned";
+  mime_type: string;
+  filename: string;
+  start_offset: number;
+  session_duration?: number | null;
+  duration_seconds?: number | null;
+  last_sequence?: number | null;
+  auto_transcribe: boolean;
+  resource_id?: string | null;
+  failure_reason?: string | null;
+  created_at: string;
+  updated_at: string;
+  received_sequences: number[];
+  next_sequence: number;
+  next_stream_index: number;
+  missing_sequences: number[];
+  chunks: Array<{
+    sequence: number;
+    checksum: string;
+    byte_size: number;
+    mime_type: string;
+    stream_id: string;
+    stream_index: number;
+    received_at: string;
+  }>;
 }
 
 export interface KnowledgePoint {
@@ -192,6 +214,8 @@ export interface AssessmentQuestion {
 
 export interface Job {
   id: string;
+  session_id?: string | null;
+  resource_id?: string | null;
   kind: string;
   status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
   stage: string;
@@ -233,42 +257,9 @@ export interface SessionDetail extends SessionSummary {
   };
 }
 
-export interface ProviderPreset {
-  id: string;
-  label: string;
-  base_url: string;
-  default_model: string;
-  api_style: string;
-  key_required: boolean;
-  description: string;
-}
-
-export interface ModelProviderState {
-  ai_provider: string;
-  ai_label?: string;
-  api_style?: string;
-  base_url?: string;
-  asr_provider: string;
-  ai_model: string;
-  asr_model: string;
-  embedding_provider: string;
-  embedding_model: string;
-  storage_provider: string;
-  local_mode: boolean;
-  configured: boolean;
-  asr_configured: boolean;
-  local_asr_model?: string | null;
-  masked_api_key?: string | null;
-  access_token_configured: boolean;
-  external_upload_requires_confirmation: boolean;
-}
-
-export interface ProviderOptions {
-  presets: ProviderPreset[];
-  current: ModelProviderState;
-}
-
 export interface HomePayload {
+  generated_at: string;
+  timezone: string;
   sessions: SessionSummary[];
   open_debt_count: number;
   urgent_debt_count: number;
@@ -284,6 +275,25 @@ export interface HomePayload {
   }>;
   pending_review_count: number;
   jobs: Job[];
+  active_recordings: Array<{
+    id: string;
+    session_id: string;
+    status: "recording" | "finalizing" | "failed";
+    filename: string;
+    failure_reason?: string | null;
+    chunk_count?: number;
+    updated_at: string;
+    session_title: string;
+    course_name: string;
+  }>;
+  schedule_connection?: ScheduleConnection | null;
+  onboarding: {
+    schedule_ready: boolean;
+    transcription_configured: boolean;
+    transcription_tested: boolean;
+    session_created: boolean;
+    recording_started: boolean;
+  };
 }
 
 export interface AcademicTerm {
@@ -316,6 +326,7 @@ export interface ScheduleOccurrence {
   starts_at: string;
   ends_at: string;
   status: "scheduled" | "cancelled";
+  sync_status?: "active" | "removed" | "superseded";
   source_kind: "regular" | "adjustment" | "makeup";
   room?: string | null;
   building?: string | null;
@@ -349,6 +360,44 @@ export interface ReviewItem {
   reasons: string[];
   navigation_path?: string | null;
   created_at: string;
+  snoozed_until?: string | null;
+}
+
+export interface ApplicationSettings {
+  timezone: string;
+  auto_transcribe: boolean;
+}
+
+export interface ScheduleSyncChange {
+  external_id: string;
+  course_name: string;
+  occurrence_date: string;
+  starts_at: string;
+  ends_at: string;
+  changes?: Record<string, { before: unknown; after: unknown }>;
+  reason?: string;
+  session_id?: string;
+}
+
+export interface ScheduleSyncBatch {
+  id: string;
+  connector: string;
+  source: string;
+  academic_term: string;
+  term_id?: string | null;
+  snapshot_hash: string;
+  status: "pending" | "applied" | "failed";
+  diff: {
+    added: ScheduleSyncChange[];
+    modified: ScheduleSyncChange[];
+    removed: ScheduleSyncChange[];
+    conflicts: ScheduleSyncChange[];
+    legacy_adoption?: { occurrence_ids: string[]; rule_ids: string[] };
+    summary: { added: number; modified: number; removed: number; conflicts: number };
+  };
+  error?: string | null;
+  created_at: string;
+  applied_at?: string | null;
 }
 
 export interface InboxItem {
@@ -373,6 +422,7 @@ export interface ProviderProfile {
   region?: string | null;
   default_model: string;
   capabilities: string[];
+  custom_headers: Record<string, string>;
   external: boolean;
   enabled: boolean;
   implementation_status: string;
@@ -380,6 +430,7 @@ export interface ProviderProfile {
   credential_configured: boolean;
   last_test_status?: string | null;
   last_test_message?: string | null;
+  last_tested_at?: string | null;
 }
 
 export interface LocalASRStatus {
@@ -397,6 +448,31 @@ export interface LocalASRStatus {
   timeout_seconds: number;
   ffmpeg_ready: boolean;
   ready: boolean;
+  profile_id?: string | null;
+  active: boolean;
+}
+
+export interface LocalModel {
+  id: string;
+  name: string;
+  file_name: string;
+  sha256: string;
+  download_bytes: number;
+  disk_bytes: number;
+  speed: string;
+  accuracy: string;
+  languages: string[];
+  use_case: string;
+  recommended: boolean;
+  status: "not_downloaded" | "queued" | "downloading" | "cancelling" | "paused" | "cancelled" | "completed" | "failed" | "corrupted" | "missing";
+  installed: boolean;
+  corrupted: boolean;
+  selected: boolean;
+  bytes_downloaded: number;
+  progress: number;
+  can_resume: boolean;
+  error?: string | null;
+  model_directory: string;
 }
 
 export interface ProviderSettings {
@@ -405,6 +481,7 @@ export interface ProviderSettings {
   defaults: Record<string, ProviderProfile>;
   secret_encryption_configured: boolean;
   local_asr?: LocalASRStatus | null;
+  local_models: LocalModel[];
 }
 
 export interface ProviderUsage {

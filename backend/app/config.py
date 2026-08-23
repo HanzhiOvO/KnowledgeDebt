@@ -46,6 +46,8 @@ class Settings:
     def from_env(cls) -> Settings:
         data_dir = Path(os.getenv("KNOWLEDGEDEBT_DATA_DIR", "./data")).resolve()
         model_dir = os.getenv("KNOWLEDGEDEBT_LOCAL_ASR_MODEL_DIR", "").strip()
+        legacy_model_dir = data_dir / "asr-models"
+        default_model_dir = data_dir / "models"
         return cls(
             data_dir=data_dir,
             ai_provider=os.getenv("KNOWLEDGEDEBT_AI_PROVIDER", "openai_compatible"),
@@ -71,12 +73,14 @@ class Settings:
             schedule_sync_interval_minutes=max(
                 30, int(os.getenv("KNOWLEDGEDEBT_SCHEDULE_SYNC_INTERVAL_MINUTES", "360"))
             ),
-            # 本地 ASR：只读取配置，不自动下载模型，也不启用尚未就绪的路由。
+            # 原生应用统一使用 data/models；旧开发目录存在时继续读取，避免升级后丢失模型。
             local_asr_binary=os.getenv("KNOWLEDGEDEBT_LOCAL_ASR_BINARY", "whisper-cli").strip(),
             local_asr_model=os.getenv("KNOWLEDGEDEBT_LOCAL_ASR_MODEL", "").strip(),
             local_asr_model_dir=Path(model_dir).expanduser().resolve()
             if model_dir
-            else data_dir / "asr-models",
+            else legacy_model_dir
+            if legacy_model_dir.is_dir() and not default_model_dir.exists()
+            else default_model_dir,
             local_asr_language=os.getenv("KNOWLEDGEDEBT_LOCAL_ASR_LANGUAGE", "zh").strip(),
             local_asr_threads=max(0, int(os.getenv("KNOWLEDGEDEBT_LOCAL_ASR_THREADS", "0"))),
             local_asr_timeout_seconds=max(

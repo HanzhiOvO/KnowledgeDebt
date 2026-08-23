@@ -99,6 +99,20 @@ open_browser_when_ready() {
   printf '\n服务仍在启动，请稍后手动打开 http://localhost:3000\n'
 }
 
+clear_stale_next_lock() {
+  local lock_file="$PROJECT_DIR/web/.next/dev/lock"
+  [[ -f "$lock_file" ]] || return
+  local lock_pid lock_command
+  lock_pid="$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$lock_file" | head -n 1)"
+  lock_command="$(test -n "$lock_pid" && ps -p "$lock_pid" -o command= 2>/dev/null || true)"
+  if [[ -n "$lock_pid" && "$lock_command" == *"next"* ]]; then
+    fail "检测到另一个 Next.js 开发服务仍在运行（PID $lock_pid）。请先停止旧实例。"
+  fi
+  local stale_lock="${lock_file}.stale.$(date +%Y%m%d%H%M%S)"
+  mv "$lock_file" "$stale_lock"
+  printf '已保留并移开失效的 Next.js 启动锁：%s\n' "${stale_lock#$PROJECT_DIR/}"
+}
+
 for argument in "$@"; do
   case "$argument" in
     --no-browser)
@@ -121,7 +135,6 @@ cd "$PROJECT_DIR"
 
 require_command node "请安装 Node.js 24 或更高版本。"
 require_command npm "请安装 npm。"
-require_command make "请安装 make。"
 
 NODE_MAJOR="$(node -p 'Number(process.versions.node.split(".")[0])')"
 if (( NODE_MAJOR < 24 )); then
@@ -151,18 +164,11 @@ if (( SKIP_INSTALL == 0 )); then
 
   REQUIREMENTS_STAMP=".venv/.knowledgedebt-requirements.sha256"
   REQUIREMENTS_FILES=(backend/requirements.txt backend/requirements-dev.txt)
-  if [[ "${KNOWLEDGEDEBT_LOCAL_ASR:-1}" != "0" ]]; then
-    REQUIREMENTS_FILES+=(backend/requirements-local-asr.txt)
-  fi
   REQUIREMENTS_HASH="$(hash_files "${REQUIREMENTS_FILES[@]}" || true)"
   INSTALLED_REQUIREMENTS_HASH="$(test -f "$REQUIREMENTS_STAMP" && sed -n '1p' "$REQUIREMENTS_STAMP" || true)"
   if [[ -z "$REQUIREMENTS_HASH" || "$REQUIREMENTS_HASH" != "$INSTALLED_REQUIREMENTS_HASH" ]]; then
     printf '正在安装后端依赖……\n'
     .venv/bin/pip install -r backend/requirements-dev.txt
-    if [[ "${KNOWLEDGEDEBT_LOCAL_ASR:-1}" != "0" ]]; then
-      printf '正在安装本地语音转写 faster-whisper……\n'
-      .venv/bin/pip install -r backend/requirements-local-asr.txt
-    fi
     [[ -n "$REQUIREMENTS_HASH" ]] && printf '%s\n' "$REQUIREMENTS_HASH" > "$REQUIREMENTS_STAMP"
   else
     printf '后端依赖没有变化，跳过安装。\n'
@@ -191,4 +197,31 @@ if (( OPEN_BROWSER == 1 )); then
   open_browser_when_ready &
 fi
 
-exec make dev
+clear_stale_next_lock
+
+API_PID=""
+WEB_PID=""
+
+stop_services() {
+  trap - INT TERM EXIT
+  [[ -n "$API_PID" ]] && kill "$API_PID" >/dev/null 2>&1 || true
+  [[ -n "$WEB_PID" ]] && kill "$WEB_PID" >/dev/null 2>&1 || true
+  [[ -n "$API_PID" ]] && wait "$API_PID" 2>/dev/null || true
+  [[ -n "$WEB_PID" ]] && wait "$WEB_PID" 2>/dev/null || true
+}
+
+trap stop_services INT TERM EXIT
+(cd backend && ../.venv/bin/uvicorn app.main:app --reload --port 8123) &
+API_PID=$!
+(cd web && npm run dev -- --hostname 127.0.0.1) &
+WEB_PID=$!
+
+while kill -0 "$API_PID" >/dev/null 2>&1 && kill -0 "$WEB_PID" >/dev/null 2>&1; do
+  sleep 1
+done
+
+if ! kill -0 "$API_PID" >/dev/null 2>&1; then
+  wait "$API_PID"
+else
+  wait "$WEB_PID"
+fi

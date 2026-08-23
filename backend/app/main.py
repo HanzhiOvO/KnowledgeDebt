@@ -7,20 +7,30 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
+from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from .automation import AutomationRepository, parse_iso
 from .config import Settings
 from .database import Database
 from .documents import extract_document
+from .local_models import (
+    LocalModelConflict,
+    LocalModelError,
+    LocalModelManager,
+    LocalModelNotInstalled,
+)
 from .models import (
     AcademicTermCreate,
     AnalysisRequest,
     AnswerSubmission,
+    AppSettingsUpdate,
     CourseCreate,
     CourseProfileUpdate,
     EvidenceLevel,
@@ -28,11 +38,15 @@ from .models import (
     JobCreate,
     JobKind,
     JobStatus,
+    LocalModelDeleteRequest,
+    LocalModelDownloadRequest,
     OccurrenceMaterializeRequest,
     ProviderDefaultUpdate,
     ProviderGroup,
     ProviderProfileCreate,
     ProviderProfileUpdate,
+    RecordingCreate,
+    RecordingFinalize,
     RemediationRequest,
     ResourceQualityUpdate,
     ResourceType,
@@ -43,6 +57,7 @@ from .models import (
     SessionTitleUpdate,
     TranscriptionRequest,
 )
+from .provider_headers import normalize_external_base_url
 from .provider_registry import (
     PROVIDER_CATALOG,
     LoggedAIProvider,
@@ -63,12 +78,21 @@ from .providers.local_asr import (
     assert_local_endpoint,
 )
 from .providers.openai_compatible import OpenAICompatibleProvider
+from .recording_media import RecordingAssembler, RecordingMediaError
+from .recordings import (
+    RecordingConflict,
+    RecordingIncomplete,
+    RecordingManager,
+    RecordingStorageError,
+)
 from .retrieval import RetrievalPolicy
 from .schedule import ZJSUConnector, ZJSUFixtureParser
 from .scoring import minimum_daily_minutes
 from .secrets import SecretStore
 from .service import KnowledgeService
 from .storage import LocalStorageProvider, S3StorageProvider, StorageProvider
+from .storage.base import StoredObject
+from .timezones import local_date
 from .transcription import MediaPreparer, TranscriptionOrchestrator
 
 
@@ -91,11 +115,31 @@ def _safe_name(name: str) -> str:
     return clean[:180] or "resource"
 
 
+PRIVATE_RESOURCE_FIELDS = {"local_path", "storage_key"}
+PRIVATE_CHUNK_FIELDS = {"embedding", "metadata", "visual_path"}
+
+
+def _public_chunk(chunk: dict) -> dict:
+    return {key: value for key, value in chunk.items() if key not in PRIVATE_CHUNK_FIELDS}
+
+
+def _public_resource(resource: dict) -> dict:
+    result = {key: value for key, value in resource.items() if key not in PRIVATE_RESOURCE_FIELDS}
+    result["chunks"] = [_public_chunk(chunk) for chunk in resource.get("chunks", [])]
+    return result
+
+
+def _public_session(session: dict) -> dict:
+    result = dict(session)
+    result["resources"] = [_public_resource(resource) for resource in session.get("resources", [])]
+    return result
+
+
 def _permission(confirmed: bool, provider: object) -> None:
     if getattr(provider, "requires_external_upload", False) and not confirmed:
         raise HTTPException(
             status_code=409,
-            detail="This action sends selected session material to the configured provider. Explicit confirmation is required.",
+            detail="此操作会把选中的课堂资料发送给已配置的外部 Provider，请先明确确认本次发送。",
         )
 
 
@@ -106,6 +150,8 @@ def create_app(
     asr_provider: TranscriptionProvider | None = None,
     embedding_provider: EmbeddingProvider | None = None,
     storage_provider: StorageProvider | None = None,
+    recording_assembler: RecordingAssembler | None = None,
+    local_model_manager: LocalModelManager | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -130,15 +176,25 @@ def create_app(
         storage = storage_provider
     elif settings.storage_provider == "s3":
         if not settings.s3_bucket:
-            raise ValueError("KNOWLEDGEDEBT_S3_BUCKET is required for S3 storage")
+            raise ValueError("使用 S3 存储时必须配置 KNOWLEDGEDEBT_S3_BUCKET。")
         storage = S3StorageProvider(settings.s3_bucket, settings.s3_endpoint_url)
     else:
         storage = LocalStorageProvider(settings.data_dir / "resources")
 
     automation = AutomationRepository(database)
+    automation.get_app_settings(
+        default_timezone="Asia/Shanghai",
+        default_auto_transcribe=settings.auto_transcribe,
+    )
     secret_store = SecretStore(settings.encryption_key)
     provider_registry = ProviderRegistry(automation, secret_store, settings)
     provider_registry.ensure_environment_profiles()
+    model_manager = local_model_manager or LocalModelManager(
+        database,
+        settings.local_asr_model_dir or settings.data_dir / "models",
+        selected_model=provider_registry.active_local_model_filename,
+        activate_model=provider_registry.activate_local_model,
+    )
 
     def injected_profile(name: str, provider: object, model: str) -> dict:
         return {
@@ -199,6 +255,14 @@ def create_app(
         ),
         service.refresh_scores,
     )
+    recordings = RecordingManager(
+        database,
+        automation,
+        storage,
+        settings.data_dir / "recording-chunks",
+        ffmpeg_path=settings.ffmpeg_path,
+        assembler=recording_assembler,
+    )
     zjsu_connector = ZJSUConnector()
     zjsu_parser = ZJSUFixtureParser()
 
@@ -215,10 +279,11 @@ def create_app(
     async def lifespan(_: FastAPI):
         await transcriber.adopt_unfinished()
         yield
+        model_manager.shutdown()
         await transcriber.shutdown()
 
     app = FastAPI(
-        title="KnowledgeDebt API",
+        title="知债 KnowledgeDebt API",
         version="0.2.0",
         description="Local-first course reconstruction and mastery assessment API",
         lifespan=lifespan,
@@ -229,7 +294,9 @@ def create_app(
     app.state.storage = storage
     app.state.automation = automation
     app.state.provider_registry = provider_registry
+    app.state.local_model_manager = model_manager
     app.state.transcriber = transcriber
+    app.state.recordings = recordings
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost", "http://127.0.0.1"],
@@ -251,7 +318,7 @@ def create_app(
         ):
             return JSONResponse(
                 status_code=401,
-                content={"detail": "A valid access token is required."},
+                content={"detail": "需要有效的访问令牌。请从 KnowledgeDebt 应用内打开页面后重试。"},
                 headers={"WWW-Authenticate": "Bearer"},
             )
         return await call_next(request)
@@ -260,7 +327,50 @@ def create_app(
     async def missing_handler(_, exc: KeyError):
         from fastapi.responses import JSONResponse
 
-        return JSONResponse(status_code=404, content={"detail": f"{exc.args[0]} not found"})
+        labels = {
+            "course": "课程",
+            "session": "Session",
+            "resource": "资源",
+            "job": "任务",
+            "knowledge_point": "知识点",
+            "question": "验收题",
+            "mastery_evidence": "掌握证据",
+            "recording": "录音",
+            "provider profile": "Provider Profile",
+            "academic term": "学期",
+            "schedule connection": "教务连接",
+            "schedule sync batch": "课表同步批次",
+            "schedule rule": "课表规则",
+            "schedule occurrence": "课堂安排",
+            "transcription chunk": "转写分片",
+            "inbox item": "收件项目",
+            "review item": "审核项目",
+            "local model": "本地模型",
+            "document_chunk": "资料片段",
+        }
+        subject = str(exc.args[0]) if exc.args else "请求的内容"
+        return JSONResponse(
+            status_code=404,
+            content={"detail": f"{labels.get(subject, subject)}不存在或已被移除。"},
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_handler(_, exc: RequestValidationError):
+        """Return useful field locations without echoing submitted credentials or payloads."""
+
+        errors = []
+        for error in exc.errors():
+            location = [str(item) for item in error.get("loc", ()) if item not in {"body", "query"}]
+            errors.append(
+                {
+                    "field": ".".join(location) or "请求内容",
+                    "message": "输入值不符合该字段要求。",
+                    "type": str(error.get("type", "validation_error")),
+                }
+            )
+        fields = "、".join(dict.fromkeys(item["field"] for item in errors[:5]))
+        detail = f"请求内容格式不正确，请检查：{fields}。" if fields else "请求内容格式不正确，请检查后重试。"
+        return JSONResponse(status_code=422, content={"detail": detail, "errors": errors})
 
     @app.exception_handler(ProviderNotConfigured)
     async def provider_handler(_, exc: ProviderNotConfigured):
@@ -287,6 +397,15 @@ def create_app(
 
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
+    @app.exception_handler(LocalModelConflict)
+    @app.exception_handler(LocalModelNotInstalled)
+    async def local_model_conflict_handler(_, exc: LocalModelError):
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @app.exception_handler(LocalModelError)
+    async def local_model_handler(_, exc: LocalModelError):
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+
     @app.get("/health")
     def health() -> dict:
         return {"status": "ok", "version": "0.2.0"}
@@ -294,6 +413,8 @@ def create_app(
     @app.get("/settings/provider")
     def provider_settings() -> dict:
         defaults = automation.get_provider_defaults()
+        ai_default = defaults.get("ai")
+        local_mode = bool(ai_default and not ai_default.get("external"))
         return {
             "ai_provider": settings.ai_provider,
             "asr_provider": settings.asr_provider,
@@ -302,13 +423,26 @@ def create_app(
             "embedding_provider": settings.embedding_provider,
             "embedding_model": settings.embedding_model,
             "storage_provider": storage.name,
-            "configured": bool(settings.api_key),
-            "external_upload_requires_confirmation": True,
+            "configured": bool(local_mode or (ai_default and ai_default.get("credential_configured"))),
+            "local_mode": local_mode,
+            "external_upload_requires_confirmation": bool(ai_default and ai_default.get("external")),
             "profiles": automation.list_provider_profiles(),
             "defaults": defaults,
             "secret_encryption_configured": secret_store.configured,
             "local_asr": provider_registry.local_asr_status(),
+            "local_models": model_manager.list_models(),
         }
+
+    @app.get("/settings/application")
+    def application_settings() -> dict:
+        return automation.get_app_settings(
+            default_timezone="Asia/Shanghai",
+            default_auto_transcribe=settings.auto_transcribe,
+        )
+
+    @app.patch("/settings/application")
+    def update_application_settings(payload: AppSettingsUpdate) -> dict:
+        return automation.update_app_settings(payload.model_dump(exclude_none=True))
 
     @app.get("/settings/providers/catalog")
     def provider_catalog() -> list[dict]:
@@ -318,8 +452,43 @@ def create_app(
     def list_provider_profiles() -> list[dict]:
         return automation.list_provider_profiles()
 
-    def normalize_local_asr(values: dict, adapter: str) -> None:
-        """本地 ASR Profile 一律标记为本地，并拒绝伪装成本地的公网地址。"""
+    @app.get("/settings/local-models")
+    def list_local_models() -> list[dict]:
+        return model_manager.list_models()
+
+    @app.post("/settings/local-models/{model_id}/download", status_code=202)
+    def download_local_model(model_id: str, payload: LocalModelDownloadRequest) -> dict:
+        return model_manager.start_download(model_id, confirmed=payload.confirmed)
+
+    @app.post("/settings/local-models/{model_id}/cancel")
+    def cancel_local_model_download(model_id: str) -> dict:
+        return model_manager.cancel_download(model_id)
+
+    @app.post("/settings/local-models/{model_id}/activate")
+    def activate_local_model(model_id: str) -> dict:
+        return model_manager.activate(model_id)
+
+    @app.delete("/settings/local-models/{model_id}")
+    def delete_local_model(model_id: str, payload: LocalModelDeleteRequest) -> dict:
+        return model_manager.delete(model_id, confirmed=payload.confirmed)
+
+    def normalize_provider_profile(values: dict, adapter: str) -> None:
+        """Keep external credentials out of URLs and local ASR on private endpoints."""
+
+        if adapter == "openai_compatible":
+            values["external"] = True
+            if "base_url" in values:
+                try:
+                    values["base_url"] = normalize_external_base_url(values["base_url"])
+                except ValueError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
+            return
+
+        if adapter == "local_rule":
+            values["external"] = False
+            values["base_url"] = ""
+            values["credential_reference"] = None
+            return
 
         if adapter not in LOCAL_ASR_ADAPTERS:
             return
@@ -356,13 +525,13 @@ def create_app(
         if reference and not reference.startswith("env:"):
             raise HTTPException(status_code=422, detail="credential_reference 仅支持 env:VARIABLE")
         values["implementation_status"] = implementation_status
-        normalize_local_asr(values, payload.adapter)
+        normalize_provider_profile(values, payload.adapter)
         return automation.create_provider_profile(values)
 
     @app.patch("/settings/providers/{profile_id}")
     def update_provider_profile(profile_id: str, payload: ProviderProfileUpdate) -> dict:
         values = payload.model_dump(exclude_unset=True, mode="json")
-        normalize_local_asr(values, automation.get_provider_profile(profile_id)["adapter"])
+        normalize_provider_profile(values, automation.get_provider_profile(profile_id)["adapter"])
         credential = values.pop("credential", None)
         if credential:
             values["credential_ciphertext"] = secret_store.encrypt(credential)
@@ -441,8 +610,7 @@ def create_app(
         )
         return {**connection, **result}
 
-    @app.post("/schedule/import-fixture")
-    async def import_schedule_fixture(file: UploadFile = File(...)) -> dict:
+    async def preview_fixture(file: UploadFile) -> dict:
         schedule_connection()
         raw = await file.read(2_000_001)
         if len(raw) > 2_000_000:
@@ -450,50 +618,10 @@ def create_app(
         automation.update_schedule_connection_state(zjsu_connector.connector_id, state="syncing")
         try:
             parsed = zjsu_parser.parse(raw)
-            term_data = parsed["term"]
-            term = next(
-                (
-                    item
-                    for item in automation.list_terms()
-                    if item["name"] == term_data["name"]
-                    and item["starts_on"] == term_data["starts_on"]
-                    and item["ends_on"] == term_data["ends_on"]
-                ),
-                None,
-            )
-            if not term:
-                term = automation.create_term(
-                    {
-                        "name": term_data["name"],
-                        "starts_on": term_data["starts_on"],
-                        "ends_on": term_data["ends_on"],
-                        "timezone": term_data.get("timezone", "Asia/Shanghai"),
-                        "current": bool(term_data.get("current", True)),
-                    }
-                )
-            rules_by_external: dict[str, dict] = {}
-            for rule_data in parsed["rules"]:
-                rule = automation.upsert_schedule_rule({**rule_data, "term_id": term["id"]})
-                rules_by_external[rule["external_id"]] = rule
-            occurrences: list[dict] = []
-            materialized = 0
-            for occurrence_data in parsed["occurrences"]:
-                rule = rules_by_external.get(occurrence_data.pop("rule_external_id"))
-                if not rule:
-                    raise ValueError("adjustment references an unknown rule_external_id")
-                occurrence = automation.upsert_occurrence({**occurrence_data, "rule_id": rule["id"]})
-                occurrences.append(occurrence)
-                if (
-                    occurrence["status"] != "cancelled"
-                    and parse_iso(occurrence["ends_at"]) <= datetime.now(UTC)
-                ):
-                    automation.materialize_occurrence(occurrence["id"], "occurred")
-                    materialized += 1
-            connection = automation.update_schedule_connection_state(
+            batch = automation.create_schedule_sync_batch(
                 zjsu_connector.connector_id,
-                state="connected",
-                synced=True,
-                error=None,
+                "zjsu_fixture",
+                parsed,
             )
         except Exception as exc:
             automation.update_schedule_connection_state(
@@ -502,12 +630,58 @@ def create_app(
                 error=str(exc),
             )
             raise
+        return batch
+
+    @app.post("/schedule/sync-batches/preview", status_code=201)
+    async def preview_schedule_fixture(file: UploadFile = File(...)) -> dict:
+        return await preview_fixture(file)
+
+    @app.get("/schedule/sync-batches/{batch_id}")
+    def get_schedule_sync_batch(batch_id: str) -> dict:
+        return automation.get_schedule_sync_batch(batch_id)
+
+    @app.post("/schedule/sync-batches/{batch_id}/apply")
+    def apply_schedule_sync_batch(batch_id: str) -> dict:
+        try:
+            batch = automation.apply_schedule_sync_batch(batch_id)
+        except Exception as exc:
+            automation.update_schedule_connection_state(
+                zjsu_connector.connector_id,
+                state="error",
+                error=str(exc),
+            )
+            raise
+        connection = automation.update_schedule_connection_state(
+            zjsu_connector.connector_id,
+            state="connected",
+            synced=True,
+            error=None,
+        )
+        return {"batch": batch, "connection": connection}
+
+    @app.post("/schedule/import-fixture")
+    async def import_schedule_fixture(file: UploadFile = File(...)) -> dict:
+        """兼容旧客户端：仍原子应用，但新界面应先 preview 再由用户确认。"""
+
+        batch = await preview_fixture(file)
+        applied = automation.apply_schedule_sync_batch(batch["id"])
+        connection = automation.update_schedule_connection_state(
+            zjsu_connector.connector_id,
+            state="connected",
+            synced=True,
+            error=None,
+        )
+        payload = applied["payload"]
         return {
             "connection": connection,
-            "term": term,
-            "rule_count": len(rules_by_external),
-            "occurrence_count": len(occurrences),
-            "materialized_session_count": materialized,
+            "term": next(
+                (item for item in automation.list_terms() if item["id"] == applied["term_id"]),
+                None,
+            ),
+            "rule_count": len(payload["rules"]),
+            "occurrence_count": len(payload["occurrences"]),
+            "materialized_session_count": 0,
+            "batch": applied,
         }
 
     @app.get("/schedule/rules")
@@ -554,7 +728,7 @@ def create_app(
 
     @app.get("/sessions/{session_id}")
     def get_session(session_id: str) -> dict:
-        return enriched_session(session_id)
+        return _public_session(enriched_session(session_id))
 
     @app.patch("/sessions/{session_id}/title")
     def update_session_title(session_id: str, payload: SessionTitleUpdate) -> dict:
@@ -570,7 +744,7 @@ def create_app(
     def consent_manifest(session_id: str, operation: str, resource_id: str | None = None) -> dict:
         session = database.get_session(session_id)
         if operation not in {"analysis", "assessment", "transcription", "indexing"}:
-            raise HTTPException(status_code=422, detail="unsupported operation")
+            raise HTTPException(status_code=422, detail="不支持的操作类型。")
         ai_profile, ai = active_ai()
         embedding_profile, embeddings = active_embedding()
         provider_entries = [(ai_profile, ai), (embedding_profile, embeddings)]
@@ -582,7 +756,7 @@ def create_app(
             provider_entries = [(asr_profile, asr)]
             resources = [item for item in resources if item["id"] == resource_id]
             if not resources:
-                raise HTTPException(status_code=422, detail="select a Session audio or video resource")
+                raise HTTPException(status_code=422, detail="请选择当前 Session 中的录音或视频资源。")
             sends = ["the selected original audio/video binary", "its MIME type and filename"]
             does_not_send = ["other Session resources", "course history", "local filesystem paths"]
         elif operation == "indexing":
@@ -630,22 +804,22 @@ def create_app(
         start_offset: float | None = Form(None),
         end_offset: float | None = Form(None),
         session_duration: float | None = Form(None),
-        auto_transcribe: bool = Form(True),
+        auto_transcribe: bool | None = Form(None),
     ) -> dict:
         if not all(0 <= value <= 1 for value in (coverage, quality, relevance)):
-            raise HTTPException(status_code=422, detail="coverage, quality and relevance must be between 0 and 1")
+            raise HTTPException(status_code=422, detail="覆盖度、质量和相关性必须在 0 到 1 之间。")
         if duration_seconds is not None and duration_seconds <= 0:
-            raise HTTPException(status_code=422, detail="duration_seconds must be positive")
+            raise HTTPException(status_code=422, detail="媒体时长必须大于 0 秒。")
         if start_offset is not None and start_offset < 0:
-            raise HTTPException(status_code=422, detail="start_offset cannot be negative")
+            raise HTTPException(status_code=422, detail="录音起点不能小于 0 秒。")
         if end_offset is None and start_offset is not None and duration_seconds is not None:
             end_offset = start_offset + duration_seconds
         if end_offset is not None and (start_offset is None or end_offset <= start_offset):
-            raise HTTPException(status_code=422, detail="end_offset must be after start_offset")
+            raise HTTPException(status_code=422, detail="录音终点必须晚于录音起点。")
         if session_duration is not None and session_duration <= 0:
-            raise HTTPException(status_code=422, detail="session_duration must be positive")
+            raise HTTPException(status_code=422, detail="课堂总时长必须大于 0 秒。")
         if session_duration is not None and end_offset is not None and end_offset > session_duration:
-            raise HTTPException(status_code=422, detail="capture range cannot exceed session_duration")
+            raise HTTPException(status_code=422, detail="录音时间范围不能超过课堂总时长。")
         capture_range = [start_offset, end_offset] if start_offset is not None and end_offset is not None else []
         upload_id = uuid.uuid4().hex
         key = f"{session_id}/{upload_id}_{_safe_name(file.filename or 'resource')}"
@@ -689,34 +863,171 @@ def create_app(
                 await service.retriever.index_resource(resource["id"])
             resource = database.get_resource(resource["id"])
         reconstruction, learning = service.refresh_scores(session_id)
+        effective_auto_transcribe = (
+            application_settings()["auto_transcribe"]
+            if auto_transcribe is None
+            else auto_transcribe
+        )
         resource_automation = automation.ensure_resource_automation(
-            resource["id"], state="saved", auto_transcribe=auto_transcribe
+            resource["id"], state="saved", auto_transcribe=effective_auto_transcribe
         )
         transcription_job = None
-        if (
-            resource_type in {ResourceType.AUDIO, ResourceType.VIDEO}
-            and settings.auto_transcribe
-            and auto_transcribe
-        ):
-            profile, _ = active_asr()
-            if profile.get("external"):
-                resource_automation = automation.update_resource_transcription(
-                    resource["id"], "awaiting_consent"
-                )
-            else:
-                transcription_job, created = transcriber.create_job(
-                    resource["id"], confirmed_external_upload=False, profile=profile
-                )
-                resource_automation = automation.get_resource_automation(resource["id"])
-                if created:
-                    background.add_task(transcriber.run, transcription_job["id"])
+        if resource_type in {ResourceType.AUDIO, ResourceType.VIDEO} and effective_auto_transcribe:
+            resource_automation, transcription_job = queue_automatic_transcription(
+                resource["id"], background
+            )
         resource["session_scores"] = {"reconstruction": reconstruction, "learning_coverage": learning}
         resource["automation"] = resource_automation
         resource["transcription_job"] = transcription_job
-        return resource
+        return _public_resource(resource)
+
+    def queue_automatic_transcription(
+        resource_id: str,
+        background: BackgroundTasks,
+    ) -> tuple[dict, dict | None]:
+        """Queue only a genuinely configured local route; external media still needs consent."""
+
+        try:
+            profile, _ = active_asr()
+        except (ProviderNotConfigured, ValueError) as exc:
+            state = automation.update_resource_transcription(
+                resource_id, "awaiting_configuration", error=str(exc)
+            )
+            return state, None
+        adapter = profile.get("adapter")
+        if profile.get("external"):
+            if not profile.get("credential_configured") and profile.get("id") is not None:
+                state = automation.update_resource_transcription(
+                    resource_id,
+                    "awaiting_configuration",
+                    error="尚未配置可用的语音转写密钥；原始录音已安全保存。",
+                )
+            else:
+                state = automation.update_resource_transcription(resource_id, "awaiting_consent")
+            return state, None
+        if adapter == "local_whisper_cpp" and not provider_registry.local_asr_status(profile)["ready"]:
+            state = automation.update_resource_transcription(
+                resource_id,
+                "awaiting_configuration",
+                error="本地 whisper.cpp 或模型尚未就绪；原始录音已安全保存。",
+            )
+            return state, None
+        if adapter == LOCAL_SERVICE_ADAPTER and not profile.get("base_url"):
+            state = automation.update_resource_transcription(
+                resource_id,
+                "awaiting_configuration",
+                error="尚未配置本地 / 私网 ASR 服务地址；原始录音已安全保存。",
+            )
+            return state, None
+        try:
+            job, created = transcriber.create_job(
+                resource_id, confirmed_external_upload=False, profile=profile
+            )
+        except (ProviderNotConfigured, ValueError) as exc:
+            state = automation.update_resource_transcription(
+                resource_id, "awaiting_configuration", error=str(exc)
+            )
+            return state, None
+        if created:
+            background.add_task(transcriber.run, job["id"])
+        return automation.get_resource_automation(resource_id), job
+
+    @app.post("/sessions/{session_id}/recordings", status_code=201)
+    def create_recording(session_id: str, payload: RecordingCreate) -> dict:
+        values = payload.model_dump()
+        if values["auto_transcribe"] is None:
+            values["auto_transcribe"] = application_settings()["auto_transcribe"]
+        try:
+            recording, created = recordings.create(session_id, values)
+        except RecordingConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {**recording, "deduplicated": not created}
+
+    @app.get("/sessions/{session_id}/recordings/incomplete")
+    def incomplete_recordings(session_id: str) -> list[dict]:
+        database.get_session(session_id)
+        return recordings.list_incomplete(session_id)
+
+    @app.get("/recordings/{recording_id}")
+    def get_recording(recording_id: str) -> dict:
+        return recordings.get(recording_id)
+
+    @app.put("/recordings/{recording_id}/chunks/{sequence}")
+    async def upload_recording_chunk(
+        recording_id: str,
+        sequence: int,
+        file: UploadFile = File(...),
+        chunk_checksum: str | None = Header(default=None, alias="X-Chunk-SHA256"),
+        stream_id: str = Header(default="legacy", alias="X-Recording-Stream-ID"),
+        stream_index: int = Header(default=0, alias="X-Recording-Stream-Index"),
+    ) -> dict:
+        content = await file.read(RecordingManager.MAX_CHUNK_BYTES + 1)
+        try:
+            return recordings.save_chunk(
+                recording_id,
+                sequence,
+                content,
+                file.content_type or "application/octet-stream",
+                chunk_checksum,
+                stream_id,
+                stream_index,
+            )
+        except RecordingConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except RecordingStorageError as exc:
+            raise HTTPException(status_code=507, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/recordings/{recording_id}/finalize")
+    def finalize_recording(
+        recording_id: str,
+        payload: RecordingFinalize,
+        background: BackgroundTasks,
+    ) -> dict:
+        try:
+            resource, created = recordings.finalize(
+                recording_id, payload.last_sequence, payload.duration_seconds
+            )
+        except RecordingIncomplete as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "录音分片不完整，请先补传缺失分片。",
+                    "missing_sequences": exc.missing_sequences,
+                },
+            ) from exc
+        except RecordingConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except RecordingStorageError as exc:
+            raise HTTPException(status_code=507, detail=str(exc)) from exc
+        except RecordingMediaError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        service.refresh_scores(resource["session_id"])
+        state = automation.get_resource_automation(resource["id"])
+        job = None
+        if state["auto_transcribe"] and (created or state["transcription_state"] == "saved"):
+            state, job = queue_automatic_transcription(resource["id"], background)
+        return {
+            "recording": recordings.get(recording_id),
+            "resource": _public_resource(database.get_resource(resource["id"])),
+            "automation": state,
+            "transcription_job": job,
+            "deduplicated": not created,
+        }
+
+    @app.post("/recordings/{recording_id}/abandon")
+    def abandon_recording(recording_id: str) -> dict:
+        try:
+            return recordings.abandon(recording_id)
+        except RecordingConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/sessions/{session_id}/resources/link", status_code=201)
     def add_link_resource(session_id: str, payload: LinkResourceCreate) -> dict:
+        parsed_url = urlsplit(payload.url)
+        if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+            raise HTTPException(status_code=422, detail="链接必须是完整的 http:// 或 https:// 地址。")
         resource = database.add_resource(
             session_id,
             type=payload.resource_type.value,
@@ -726,13 +1037,63 @@ def create_app(
             extracted_text=payload.notes,
         )
         service.refresh_scores(session_id)
-        return resource
+        return _public_resource(resource)
+
+    @app.get("/resources/{resource_id}")
+    def get_resource(resource_id: str) -> dict:
+        return _public_resource(database.get_resource(resource_id))
+
+    @app.get("/resources/{resource_id}/raw")
+    def get_resource_raw(resource_id: str):
+        resource = database.get_resource(resource_id)
+        if not resource.get("storage_key"):
+            raise HTTPException(status_code=422, detail="该资源没有可打开的本地原始文件。")
+        path = storage.materialize(
+            StoredObject(
+                provider=resource.get("storage_provider") or "local",
+                key=resource["storage_key"],
+                local_path=Path(resource["local_path"]) if resource.get("local_path") else None,
+            )
+        )
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="原始文件已移动或缺失。")
+        return FileResponse(
+            path,
+            media_type=resource.get("mime_type") or "application/octet-stream",
+            filename=resource["name"],
+        )
+
+    @app.get("/chunks/{chunk_id}")
+    def get_chunk(chunk_id: str) -> dict:
+        chunk = database.get_document_chunk(chunk_id)
+        return {
+            **_public_chunk(chunk),
+            "resource": {
+                "id": chunk["resource_id"],
+                "name": chunk.get("resource_name"),
+                "type": chunk.get("resource_type"),
+                "evidence_level": chunk.get("resource_evidence_level"),
+                "mime_type": chunk.get("resource_mime_type"),
+            },
+            "preview_url": f"/chunks/{chunk_id}/visual" if chunk.get("visual_path") else None,
+        }
+
+    @app.get("/chunks/{chunk_id}/visual")
+    def get_chunk_visual(chunk_id: str):
+        chunk = database.get_document_chunk(chunk_id)
+        visual_path = chunk.get("visual_path")
+        if not visual_path:
+            raise HTTPException(status_code=404, detail="该资料片段没有可用的图片预览。")
+        path = Path(visual_path).resolve()
+        if not path.is_file() or not path.is_relative_to(settings.data_dir.resolve()):
+            raise HTTPException(status_code=404, detail="该资料片段没有可用的图片预览。")
+        return FileResponse(path)
 
     @app.patch("/resources/{resource_id}/quality")
     def update_resource_quality(resource_id: str, payload: ResourceQualityUpdate) -> dict:
         resource = database.update_resource_quality(resource_id, payload.coverage, payload.quality, payload.relevance)
         service.refresh_scores(resource["session_id"])
-        return resource
+        return _public_resource(resource)
 
     @app.post("/resources/{resource_id}/transcribe")
     async def transcribe(resource_id: str, payload: TranscriptionRequest) -> dict:
@@ -741,7 +1102,7 @@ def create_app(
             resource["local_path"] or resource.get("storage_key")
         ):
             raise HTTPException(
-                status_code=422, detail="Only a locally stored audio or video resource can be transcribed"
+                status_code=422, detail="只有已安全保存在本地的录音或视频资源可以转写。"
             )
         state = automation.ensure_resource_automation(resource_id)
         if state["transcription_state"] == "transcribed":
@@ -797,7 +1158,7 @@ def create_app(
         if getattr(service.embeddings, "requires_external_upload", False):
             raise HTTPException(
                 status_code=409,
-                detail="External embedding retrieval must run inside a consented analysis or assessment operation.",
+                detail="外部向量检索只能在用户已确认的分析或验收操作中执行。",
             )
         return await service.retriever.retrieve(session_id, payload.query, payload.policy, payload.limit)
 
@@ -833,10 +1194,10 @@ def create_app(
             _permission(payload.confirm_external_upload, embeddings)
         elif payload.kind == JobKind.TRANSCRIPTION:
             if not payload.resource_id:
-                raise HTTPException(status_code=422, detail="resource_id is required for this job")
+                raise HTTPException(status_code=422, detail="该任务必须指定资源。")
             resource = database.get_resource(payload.resource_id)
             if resource["session_id"] != session_id:
-                raise HTTPException(status_code=422, detail="resource does not belong to this Session")
+                raise HTTPException(status_code=422, detail="所选资源不属于当前 Session。")
             profile, _ = active_asr()
             job, created = transcriber.create_job(
                 payload.resource_id,
@@ -851,10 +1212,10 @@ def create_app(
             _permission(payload.confirm_external_upload, embeddings)
         if payload.kind in {JobKind.TRANSCRIPTION, JobKind.INDEXING}:
             if not payload.resource_id:
-                raise HTTPException(status_code=422, detail="resource_id is required for this job")
+                raise HTTPException(status_code=422, detail="该任务必须指定资源。")
             resource = database.get_resource(payload.resource_id)
             if resource["session_id"] != session_id:
-                raise HTTPException(status_code=422, detail="resource does not belong to this Session")
+                raise HTTPException(status_code=422, detail="所选资源不属于当前 Session。")
         job = database.create_job(
             payload.kind.value,
             session_id=session_id,
@@ -956,9 +1317,10 @@ def create_app(
                 reasons.append("文件名包含教师信息")
             if score:
                 candidates.append((min(1, score), session["id"], None, reasons))
-        for occurrence in automation.list_occurrences(
-            (captured.date()).isoformat(), (captured.date()).isoformat()
-        ):
+        local_capture_date = captured.astimezone(
+            ZoneInfo(application_settings()["timezone"])
+        ).date().isoformat()
+        for occurrence in automation.list_occurrences(local_capture_date, local_capture_date):
             if occurrence["status"] == "cancelled" or occurrence.get("session_id"):
                 continue
             starts, ends = parse_iso(occurrence["starts_at"]), parse_iso(occurrence["ends_at"])
@@ -982,20 +1344,11 @@ def create_app(
             if occurrence_id:
                 session_id = automation.materialize_occurrence(occurrence_id, "evidence")["id"]
             if not session_id:
-                raise ValueError("high-confidence match did not resolve a Session")
+                raise ValueError("高置信度归档匹配没有找到可用的 Session，请改为人工选择。")
             resource = automation.adopt_inbox_item(item_id, session_id)
             state = automation.ensure_resource_automation(resource["id"])
-            if resource["type"] in {"audio", "video"} and settings.auto_transcribe:
-                profile, _ = active_asr()
-                if profile.get("external"):
-                    state = automation.update_resource_transcription(resource["id"], "awaiting_consent")
-                else:
-                    job, created = transcriber.create_job(
-                        resource["id"], confirmed_external_upload=False, profile=profile
-                    )
-                    if created:
-                        background.add_task(transcriber.run, job["id"])
-                    state = automation.get_resource_automation(resource["id"])
+            if resource["type"] in {"audio", "video"} and application_settings()["auto_transcribe"]:
+                state, _ = queue_automatic_transcription(resource["id"], background)
             return {
                 "item": automation.get_inbox_item(item_id),
                 "matched": True,
@@ -1093,8 +1446,6 @@ def create_app(
     @app.post("/reviews/{review_id}/decision")
     def decide_review(review_id: str, payload: ReviewDecision) -> dict:
         review = automation.get_review_item(review_id)
-        if review["status"] != "pending":
-            return review
         if payload.action in {"accept", "edit_accept"}:
             value = payload.edited_value or review.get("proposed_value")
             if review["kind"] == "archive_match":
@@ -1111,7 +1462,12 @@ def create_app(
                     confidence=1 if payload.action == "edit_accept" else review["confidence"],
                     locked=payload.action == "edit_accept",
                 )
-        return automation.decide_review(review_id, payload.action, payload.reason)
+        return automation.decide_review(
+            review_id,
+            payload.action,
+            payload.reason,
+            payload.snoozed_until,
+        )
 
     @app.get("/debts")
     def debts() -> list[dict]:
@@ -1121,6 +1477,7 @@ def create_app(
     def home() -> dict:
         courses = {course["id"]: course for course in database.list_courses()}
         sessions = database.list_sessions()
+        sessions_by_id = {session["id"]: session for session in sessions}
         all_debts = database.list_debts()
         debts_by_session: dict[str, list[dict]] = {}
         for debt in all_debts:
@@ -1138,15 +1495,24 @@ def create_app(
         open_debts = [item for item in all_debts if item["status"] != "mastered"]
         pending_sessions = [item for item in sessions if item["status"] != "complete"]
         unanalyzed_sessions = [item for item in pending_sessions if not debts_by_session.get(item["id"])]
-        today = datetime.now().date().isoformat()
+        app_settings = application_settings()
+        today = local_date(app_settings["timezone"]).isoformat()
         today_occurrences = automation.list_occurrences(today, today)
         jobs = database.list_jobs()
+        active_job_resource_ids = {
+            job["resource_id"]
+            for job in jobs
+            if job["status"] in {"queued", "running"} and job.get("resource_id")
+        }
         pending_automation = []
         for session in sessions:
             for resource in database.list_resources(session["id"]):
                 if resource["type"] in {"audio", "video"}:
                     state = automation.ensure_resource_automation(resource["id"])
-                    if state["transcription_state"] not in {"transcribed", "cancelled"}:
+                    if (
+                        state["transcription_state"] not in {"transcribed", "cancelled"}
+                        and resource["id"] not in active_job_resource_ids
+                    ):
                         pending_automation.append(
                             {
                                 "kind": "transcription",
@@ -1156,7 +1522,36 @@ def create_app(
                                 "name": resource["name"],
                             }
                         )
+        incomplete_recordings = []
+        for recording in recordings.list_incomplete():
+            session = sessions_by_id.get(recording["session_id"])
+            if not session:
+                continue
+            incomplete_recordings.append(
+                {
+                    **recording,
+                    "session_title": session["title"],
+                    "course_name": courses[session["course_id"]]["name"],
+                }
+            )
+        defaults = automation.get_provider_defaults()
+        asr_profile = defaults.get("asr")
+        local_status = provider_registry.local_asr_status()
+        transcription_configured = bool(
+            asr_profile
+            and asr_profile.get("enabled")
+            and (
+                local_status["ready"]
+                if asr_profile.get("adapter") == "local_whisper_cpp"
+                else asr_profile.get("credential_configured")
+                and asr_profile.get("default_model")
+            )
+        )
+        with database.connect() as conn:
+            recording_count = conn.execute("SELECT COUNT(*) FROM recordings").fetchone()[0]
+        connection = schedule_connection()
         return {
+            "generated_at": datetime.now(UTC).isoformat(),
             "sessions": session_cards,
             "open_debt_count": len(open_debts),
             "urgent_debt_count": sum(item["priority"] >= 4 for item in open_debts),
@@ -1164,8 +1559,21 @@ def create_app(
             "minimum_minutes": minimum_daily_minutes(open_debts) + len(unanalyzed_sessions) * 5,
             "today_occurrences": today_occurrences,
             "pending_automation": pending_automation,
-            "pending_review_count": len(automation.list_review_items()),
+            "pending_review_count": len(automation.list_review_items("pending"))
+            + len(automation.list_review_items("later")),
             "jobs": jobs[:12],
+            "timezone": app_settings["timezone"],
+            "active_recordings": incomplete_recordings[:5],
+            "schedule_connection": connection,
+            "onboarding": {
+                "schedule_ready": bool(automation.list_schedule_rules()),
+                "transcription_configured": transcription_configured,
+                "transcription_tested": bool(
+                    asr_profile and asr_profile.get("last_test_status") == "succeeded"
+                ),
+                "session_created": bool(sessions),
+                "recording_started": bool(recording_count),
+            },
         }
 
     return app

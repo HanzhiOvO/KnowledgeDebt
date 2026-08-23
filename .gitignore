@@ -33,6 +33,9 @@ start-*.log
 .flutter-plugins-dependencies
 .packages
 build/
+dist/
+.cache/macos-packaging/
+packaging/macos/build-test/
 coverage/
 **/GeneratedPluginRegistrant.*
 legacy/flutter-client/android/.gradle/

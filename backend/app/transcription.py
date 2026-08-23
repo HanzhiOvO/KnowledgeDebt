@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import shutil
 import subprocess
 import time
@@ -9,15 +10,20 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from .automation import AutomationRepository
+from .automation import AutomationRepository, parse_iso
 from .database import Database
 from .models import JobStatus
 from .providers.base import TranscriptionProvider
 from .storage import StorageProvider, StoredObject
+from .timezones import local_date
 
 
 class FFmpegUnavailable(RuntimeError):
     pass
+
+
+class MediaInspectionFailed(RuntimeError):
+    """FFprobe 存在但无法证明媒体可读或取得可靠时长。"""
 
 
 class TranscriptionCancelled(RuntimeError):
@@ -33,26 +39,17 @@ class MediaPreparer:
         self.chunk_seconds = chunk_seconds
 
     def prepare(self, resource_id: str, source: Path, duration_seconds: float | None) -> list[dict[str, Any]]:
-        duration = duration_seconds or self._probe_duration(source)
+        if not source.is_file() or source.stat().st_size == 0:
+            raise MediaInspectionFailed("待转写媒体不存在或为空；原始资源记录已保留，请重新选择有效文件。")
+        duration = duration_seconds if duration_seconds and duration_seconds > 0 else None
+        if duration is None:
+            duration = self._probe_duration(source, required=True)
         direct = source.suffix.lower() in self.DIRECT_SUFFIXES
-        if duration is not None and duration <= self.chunk_seconds and direct:
+        if duration <= self.chunk_seconds and direct:
             return [{"start_seconds": 0.0, "end_seconds": duration, "media_path": str(source)}]
-        if duration is None and direct:
-            return [{"start_seconds": 0.0, "end_seconds": 0.0, "media_path": str(source)}]
         self._require_ffmpeg()
         target_dir = self.output_root / resource_id
         target_dir.mkdir(parents=True, exist_ok=True)
-        if duration is None:
-            target = target_dir / "normalized.flac"
-            self._convert(source, target, 0, None)
-            normalized_duration = self._probe_duration(target)
-            return [
-                {
-                    "start_seconds": 0.0,
-                    "end_seconds": normalized_duration or 0.0,
-                    "media_path": str(target),
-                }
-            ]
         chunks: list[dict[str, Any]] = []
         position = 0
         start = 0.0
@@ -75,9 +72,15 @@ class MediaPreparer:
                 "请安装 FFmpeg，或设置 KNOWLEDGEDEBT_FFMPEG_PATH。原始文件已安全保留，可配置后重试。"
             )
 
-    def _probe_duration(self, source: Path) -> float | None:
+    def _probe_duration(self, source: Path, *, required: bool = False) -> float | None:
         probe = str(Path(self.ffmpeg_path).with_name("ffprobe")) if "/" in self.ffmpeg_path else "ffprobe"
         if not shutil.which(probe) and not Path(probe).exists():
+            if required:
+                raise FFmpegUnavailable(
+                    "需要 FFprobe 检查媒体是否可读并确定时长，但当前未找到可执行文件。"
+                    "请安装 FFmpeg/FFprobe，或设置 KNOWLEDGEDEBT_FFMPEG_PATH 指向同目录的 FFmpeg。"
+                    "系统不会让未知时长媒体绕过分片限制；原始文件已安全保留。"
+                )
             return None
         result = subprocess.run(
             [
@@ -96,12 +99,30 @@ class MediaPreparer:
             timeout=30,
         )
         if result.returncode != 0:
+            if required:
+                diagnostic = (result.stderr or "unknown FFprobe error").strip()[-600:]
+                raise MediaInspectionFailed(
+                    f"FFprobe 无法读取该媒体或确定时长：{diagnostic}。"
+                    "系统没有创建转写请求，原始文件已安全保留。"
+                )
             return None
         try:
             value = float(result.stdout.strip())
         except ValueError:
+            if required:
+                raise MediaInspectionFailed(
+                    "FFprobe 没有返回有效媒体时长；系统不会让未知时长媒体绕过分片限制。"
+                    "原始文件已安全保留。"
+                ) from None
             return None
-        return value if value > 0 else None
+        if value <= 0:
+            if required:
+                raise MediaInspectionFailed(
+                    "FFprobe 返回的媒体时长无效；请检查文件是否包含可解码的音频轨。"
+                    "原始文件已安全保留。"
+                )
+            return None
+        return value
 
     def _convert(self, source: Path, target: Path, start: float, duration: float | None) -> None:
         command = [self.ffmpeg_path, "-hide_banner", "-loglevel", "error", "-y"]
@@ -147,7 +168,7 @@ class TranscriptionOrchestrator:
     ) -> tuple[dict[str, Any], bool]:
         resource = self.db.get_resource(resource_id)
         if resource["type"] not in {"audio", "video"}:
-            raise ValueError("only audio or video resources can be transcribed")
+            raise ValueError("只有录音或视频资源可以进入转写队列。")
         existing = self.automation.active_transcription_job(resource_id)
         if existing:
             return existing, False
@@ -206,18 +227,35 @@ class TranscriptionOrchestrator:
         try:
             resolved_profile, provider = self.provider_resolver()
             if profile["id"] and resolved_profile.get("id") != profile["id"]:
-                raise ValueError("job provider profile changed or is no longer available; create a new retry job")
+                raise ValueError("任务使用的 Provider Profile 已变更或不可用，请创建新的重试任务。")
             profile = resolved_profile
             self.db.update_job(job_id, status="running", stage="materializing_media", progress=5)
             self.automation.update_resource_transcription(resource_id, "preparing", job_id=job_id)
             source = self._materialize(resource)
             chunks = self.automation.list_transcription_chunks(resource_id)
-            if not chunks:
-                if "long_audio" in profile.get("capabilities", []):
+            missing_pending_media = any(
+                chunk["status"] != "succeeded"
+                and (
+                    not chunk.get("media_path")
+                    or not Path(chunk["media_path"]).is_file()
+                    or Path(chunk["media_path"]).stat().st_size == 0
+                )
+                for chunk in chunks
+            )
+            if not chunks or missing_pending_media:
+                # 真实 Profile 即使声明 long_audio，也统一走可恢复分片；能力标签不能
+                # 代替可验证的大小限制。id=None 仅用于测试/嵌入式注入 Provider，保留
+                # 其明确提供的整文件长音频契约，但未知时长仍必须先走媒体探测。
+                injected_native_long_audio = (
+                    profile.get("id") is None
+                    and "long_audio" in profile.get("capabilities", [])
+                    and bool(resource.get("duration_seconds"))
+                )
+                if injected_native_long_audio:
                     prepared = [
                         {
                             "start_seconds": 0.0,
-                            "end_seconds": resource.get("duration_seconds") or 0.0,
+                            "end_seconds": float(resource["duration_seconds"]),
                             "media_path": str(source),
                         }
                     ]
@@ -384,7 +422,7 @@ class TranscriptionOrchestrator:
             return self.storage.materialize(
                 StoredObject(provider=resource["storage_provider"], key=resource["storage_key"])
             )
-        raise ValueError("resource has no retained media object")
+        raise ValueError("该资源没有可读取的原始媒体文件；请检查存储或重新上传。")
 
     def _save_successful_segments(self, resource_id: str) -> None:
         merged: list[dict[str, Any]] = []
@@ -407,19 +445,46 @@ class TranscriptionOrchestrator:
             return
         session = self.db.get_session(session_id)
         course = self.db.get_course(session["course_id"])
-        date_part = (session.get("starts_at") or session["created_at"])[:10]
-        raw = " ".join(segment["text"].strip() for segment in segments[:3] if segment["text"].strip())
-        topic = raw.split("。", 1)[0].split(".", 1)[0].strip(" ，,：:；;")[:36]
-        if not topic:
+        timezone = self.automation.get_app_settings()["timezone"]
+        date_part = local_date(
+            timezone,
+            parse_iso(session.get("starts_at") or session["created_at"]),
+        ).isoformat()
+        raw = " ".join(
+            segment["text"].strip() for segment in segments[:5] if segment["text"].strip()
+        )
+        sentence = re.split(r"[。！？!?\n]", raw, maxsplit=1)[0]
+        topic = re.sub(r"\s+", " ", sentence).strip(" ，,：:；;")
+        prefix = re.compile(
+            r"^(?:(?:今天|本节课|这节课)\s*)?(?:我们\s*)?(?:主要\s*)?(?:来\s*)?"
+            r"(?:继续\s*)?(?:学习|讲解|介绍|讨论|复习)(?:了|一下)?[：:，,\s]*"
+        )
+        topic = prefix.sub("", topic).strip(" ，,：:；;")
+        if topic.startswith(course["name"]):
+            topic = topic[len(course["name"]) :].lstrip(" -—：:，,")
+        topic = topic[:20].rstrip(" ，,：:；;")
+        vague = {"课程内容", "课堂内容", "课堂笔记", "课程笔记", "本节课内容", "知识点", "复习"}
+        significant_length = len(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]", topic))
+        if not topic or topic in vague or significant_length < 3:
             return
         proposal = f"{course['name']}-{date_part}-{topic}"
+        if significant_length >= 6 and not self.automation.open_review_item(
+            "session_topic", "session", session_id
+        ):
+            self.automation.update_session_title(
+                session_id,
+                proposal,
+                source="transcript_rule",
+                confidence=0.82,
+            )
+            return
         self.automation.create_review_item(
             "session_topic",
             "session",
             session_id,
             "确认本节课主题",
             proposed_value=proposal,
-            confidence=0.58,
-            reasons=["来自转写开头的本地规则候选", "低于自动改名阈值，未静默覆盖标题"],
+            confidence=0.62,
+            reasons=["来自转写开头的本地规则候选", "主题较短或已有用户决定，未自动覆盖标题"],
             navigation_path=f"/sessions/{session_id}",
         )

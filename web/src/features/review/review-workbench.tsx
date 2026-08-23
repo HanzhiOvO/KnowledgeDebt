@@ -26,11 +26,26 @@ export function ReviewWorkbench({
   backendError?: string;
 }) {
   const router = useRouter();
+  const [items, setItems] = useState(reviews);
+  const [status, setStatus] = useState("pending");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState(backendError ?? "");
   const [uploading, setUploading] = useState(false);
 
-  async function decide(review: ReviewItem, action: "accept" | "edit_accept" | "reject" | "later", value?: string) {
+  async function loadStatus(nextStatus: string) {
+    setStatus(nextStatus);
+    setError("");
+    try {
+      const response = await fetch(`${publicApiUrl}/reviews?status=${encodeURIComponent(nextStatus)}`, { cache: "no-store" });
+      const body = (await response.json().catch(() => ([]))) as ReviewItem[] & { detail?: string };
+      if (!response.ok) throw new Error(body.detail ?? "无法读取审核列表");
+      setItems(body);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "无法读取审核列表");
+    }
+  }
+
+  async function decide(review: ReviewItem, action: "accept" | "edit_accept" | "reject" | "later" | "pending", value?: string) {
     setBusyId(review.id);
     setError("");
     try {
@@ -39,6 +54,7 @@ export function ReviewWorkbench({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action, edited_value: value || null, reason: action === "later" ? "稍后处理" : "" }),
       });
+      await loadStatus(status);
       router.refresh();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "审核操作失败");
@@ -68,13 +84,17 @@ export function ReviewWorkbench({
     <>
       <header className="page-header">
         <div><span className="eyebrow">REVIEW CENTER</span><h1>只审核真正不确定的结果</h1><p>自动化有证据、有置信度、可拒绝；你的修正会被锁定，不再被后台覆盖。</p></div>
-        <span className="review-total"><strong>{reviews.length}</strong><small>待审核</small></span>
+        <span className="review-total"><strong>{items.length}</strong><small>{reviewStatusLabel(status)}</small></span>
       </header>
       {error ? <div className="notice error" role="alert">{error}</div> : null}
 
+      <nav className="review-filters" aria-label="审核状态筛选">
+        {[["pending", "待处理"], ["later", "稍后处理"], ["accepted", "已接受"], ["rejected", "已拒绝"], ["all", "全部"]].map(([value, label]) => <button aria-current={status === value ? "page" : undefined} className={status === value ? "active" : ""} key={value} onClick={() => void loadStatus(value)} type="button">{label}</button>)}
+      </nav>
+
       <section className="review-layout">
         <div className="review-list">
-          {reviews.length ? reviews.map((review) => (
+          {items.length ? items.map((review) => (
             <ReviewCard
               busy={busyId === review.id}
               key={review.id}
@@ -83,7 +103,7 @@ export function ReviewWorkbench({
               onDecision={(action, value) => decide(review, action, value)}
             />
           )) : (
-            <div className="panel review-empty"><span className="success-glyph">✓</span><h2>没有等待确认的结果</h2><p>高置信结果已经自动处理；低置信结果会保留在这里，而不是静默覆盖。</p></div>
+            <div className="panel review-empty"><span className="success-glyph">✓</span><h2>这个筛选下没有项目</h2><p>“稍后处理”的项目会一直保留，可随时重新打开，不会静默消失。</p></div>
           )}
         </div>
 
@@ -125,13 +145,13 @@ function ReviewCard({
   review: ReviewItem;
   sessions: SessionSummary[];
   busy: boolean;
-  onDecision: (action: "accept" | "edit_accept" | "reject" | "later", value?: string) => void;
+  onDecision: (action: "accept" | "edit_accept" | "reject" | "later" | "pending", value?: string) => void;
 }) {
   const [value, setValue] = useState(review.proposed_value ?? "");
   const archive = review.kind === "archive_match";
   return (
     <article className="panel review-card">
-      <header><span className="badge review-kind">{kindLabels[review.kind]}</span><span className="confidence">置信度 {Math.round(review.confidence * 100)}%</span></header>
+      <header><span className="badge review-kind">{kindLabels[review.kind]}</span><span className="confidence">{reviewStatusLabel(review.status)} · 置信度 {Math.round(review.confidence * 100)}%</span></header>
       <h2>{review.title}</h2>
       {archive ? (
         <label className="review-field">建议归档到<select value={value} onChange={(event) => setValue(event.target.value)}><option value="">请选择 Session</option>{sessions.map((session) => <option key={session.id} value={session.id}>{session.title}</option>)}</select></label>
@@ -141,7 +161,7 @@ function ReviewCard({
       <div className="reason-list"><strong>判断依据</strong>{review.reasons.map((reason) => <span key={reason}>· {reason}</span>)}</div>
       <footer>
         {review.navigation_path ? <Link href={review.navigation_path}>查看来源</Link> : <span />}
-        <div><button className="text-button" disabled={busy} onClick={() => onDecision("later")}>稍后</button><button className="button ghost danger-text" disabled={busy} onClick={() => onDecision("reject")}>拒绝</button><button className="button primary" disabled={busy || !value} onClick={() => onDecision(value === review.proposed_value ? "accept" : "edit_accept", value)}>{busy ? "处理中…" : value === review.proposed_value ? "接受" : "修改并接受"}</button></div>
+        {review.status === "pending" || review.status === "later" ? <div>{review.status === "later" ? <button className="text-button" disabled={busy} onClick={() => onDecision("pending")}>重新设为待处理</button> : <button className="text-button" disabled={busy} onClick={() => onDecision("later")}>稍后处理</button>}<button className="button ghost danger-text" disabled={busy} onClick={() => onDecision("reject")}>拒绝</button><button className="button primary" disabled={busy || !value} onClick={() => onDecision(value === review.proposed_value ? "accept" : "edit_accept", value)}>{busy ? "处理中…" : value === review.proposed_value ? "接受" : "修改并接受"}</button></div> : <span className={`badge ${review.status === "accepted" ? "accepted" : "cancelled"}`}>{reviewStatusLabel(review.status)}</span>}
       </footer>
     </article>
   );
@@ -149,4 +169,4 @@ function ReviewCard({
 
 function localDateTime() { const date = new Date(); date.setMinutes(date.getMinutes() - date.getTimezoneOffset()); return date.toISOString().slice(0, 16); }
 function inboxState(state: string) { return ({ pending: "待匹配", review: "待审核", accepted: "已归档", rejected: "已拒绝" } as Record<string, string>)[state] ?? state; }
-
+function reviewStatusLabel(state: string) { return ({ pending: "待处理", later: "稍后处理", accepted: "已接受", rejected: "已拒绝", all: "全部" } as Record<string, string>)[state] ?? state; }

@@ -11,8 +11,10 @@ KnowledgeDebt 默认 Local-first：数据库、原始资源、转写片段和学
 - 分析与验收只发送选中的文本或转写证据，不发送无关资源；
 - 外部 Embedding 默认关闭，本地 Hash Embedding 不外发文本；
 - 调用台账不保存 API Key、Authorization、Cookie 或完整请求正文；
+- API 请求校验不回显用户提交的值；Provider 与本地 ASR 错误会去除远端响应正文、URL 凭据和不必要的连接细节；
 - Provider 密钥只允许 Fernet 加密保存或 `env:VARIABLE` 引用；没有主密钥时拒绝明文入库；
 - 教务连接器不保存账号密码，不猜测接口，不绕过验证码。实时会话未来只允许加密 Cookie/Session，并在失效时要求重新认证。
+- 原生安装包不预装或静默下载大型模型；只有用户在设置中确认后，才从固定的 Hugging Face 官方 HTTPS 版本下载所选文件，并进行精确大小和 SHA-256 校验；取消后只保留本地下载分片。
 
 ## 浏览器与 API
 

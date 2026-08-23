@@ -1,4 +1,4 @@
-# KnowledgeDebt 后端
+# 知债 KnowledgeDebt 后端
 
 这里是 FastAPI 薄后端，负责课程与 Session 领域模型、证据校验、课表/Occurrence 自动化、录音转写编排、统一审核、Provider 路由、调用台账、存储和数据库迁移。
 

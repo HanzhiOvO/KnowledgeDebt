@@ -12,6 +12,10 @@ make migrate
 | --- | --- |
 | `20260815_0001_baseline` | v0.1 课程、Session、资源、知识点、学习、验收与 Job 基线 |
 | `20260815_0002_automation_workbench` | Provider Profile、学期/课表/Occurrence、Session/资源自动化、转写分片、全局收件箱、统一审核、调用与审计台账 |
+| `20260820_0003_p0_integrity` | 持久录音、权威课表快照、应用设置与关键唯一约束 |
+| `20260821_0004_recording_streams` | 浏览器录音流边界与恢复所需状态 |
+| `20260821_0005_local_model_downloads` | 本地模型下载、断点、校验与恢复状态 |
+| `20260821_0006_provider_custom_headers` | OpenAI-compatible Profile 的非敏感自定义请求头 |
 
 开发环境的 `Database` 初始化仍会幂等补齐表结构，便于零配置 SQLite；生产部署应以 Alembic revision 为准。迁移脚本不得删除原始媒体，也不得把 Provider 明文密钥写入数据库。
 
