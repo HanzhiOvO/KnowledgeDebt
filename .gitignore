@@ -13,9 +13,11 @@ data/
 
 # Python 缓存与虚拟环境
 __pycache__/
+*.ses
 *.py[cod]
 .venv/
 .venv-bootstrap/
+.get-pip.py
 .pytest_cache/
 .ruff_cache/
 

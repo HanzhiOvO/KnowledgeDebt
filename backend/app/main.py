@@ -4,6 +4,7 @@ import re
 import secrets
 import uuid
 from contextlib import asynccontextmanager
+from dataclasses import replace as replace_settings
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -37,9 +38,11 @@ from .providers.base import (
     ProviderRequestError,
     TranscriptionProvider,
 )
-from .providers.local_rule import LocalASRProvider, LocalRuleProvider
-from .providers.openai_compatible import OpenAICompatibleProvider
+from .providers.factory import build_ai_provider, build_asr_provider, build_embedding_provider
+from .providers.local_whisper import LocalWhisperProvider
+from .providers.presets import PROVIDER_PRESETS, normalize_provider, public_presets, resolve_preset
 from .retrieval import RetrievalPolicy
+from .runtime_settings import mask_api_key, save_runtime_provider
 from .scoring import minimum_daily_minutes
 from .service import KnowledgeService
 from .storage import LocalStorageProvider, S3StorageProvider, StorageProvider, StoredObject
@@ -57,6 +60,13 @@ class RetrievalRequest(BaseModel):
     query: str = Field(min_length=1, max_length=1000)
     policy: RetrievalPolicy = RetrievalPolicy.RECONSTRUCTION
     limit: int = Field(default=12, ge=1, le=50)
+
+
+class ModelProviderUpdate(BaseModel):
+    provider: str = Field(min_length=1, max_length=64)
+    api_key: str | None = Field(default=None, max_length=512)
+    model: str | None = Field(default=None, max_length=120)
+    base_url: str | None = Field(default=None, max_length=500)
 
 
 def _safe_name(name: str) -> str:
@@ -84,6 +94,24 @@ def _public_session(session: dict) -> dict:
     return result
 
 
+def _local_asr_prompt(session: dict, resource: dict) -> str:
+    """Build a small glossary prompt so Whisper spells course terms correctly."""
+    glossary: list[str] = [str(session.get("title") or "")]
+    notes = str(session.get("notes") or "").strip()
+    if notes:
+        glossary.append(notes[:300])
+    for item in session.get("resources", []):
+        if item.get("id") == resource.get("id") or item.get("type") in {"audio", "video"}:
+            continue
+        text = " ".join(str(item.get("extracted_text") or "").split())[:300]
+        if text:
+            glossary.append(text)
+        elif item.get("name"):
+            glossary.append(str(item["name"]))
+    prompt = "；".join(part for part in glossary if part)[:1200]
+    return f"课程主题与术语提示：{prompt}；当前转写资料：{resource.get('name', '')}"
+
+
 def _permission(confirmed: bool, provider: object) -> None:
     if getattr(provider, "requires_external_upload", False) and not confirmed:
         raise HTTPException(
@@ -103,22 +131,9 @@ def create_app(
     settings = settings or Settings.from_env()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     database = db or Database(settings.database_url or settings.data_dir / "knowledgedebt.sqlite3")
-    default_provider = OpenAICompatibleProvider(
-        settings.api_key,
-        settings.base_url,
-        settings.ai_model,
-        settings.asr_model,
-        settings.embedding_model,
-    )
-    selected_ai_provider = ai_provider
-    if selected_ai_provider is None:
-        selected_ai_provider = LocalRuleProvider() if settings.ai_provider == "local_rule" else default_provider
-    selected_asr_provider = asr_provider
-    if selected_asr_provider is None:
-        selected_asr_provider = LocalASRProvider() if settings.asr_provider == "local_rule" else default_provider
-    selected_embedding_provider = embedding_provider
-    if selected_embedding_provider is None and settings.embedding_provider == "openai_compatible":
-        selected_embedding_provider = default_provider
+    selected_ai_provider = ai_provider or build_ai_provider(settings)
+    selected_asr_provider = asr_provider or build_asr_provider(settings)
+    selected_embedding_provider = embedding_provider or build_embedding_provider(settings)
     service = KnowledgeService(
         database,
         selected_ai_provider,
@@ -148,6 +163,15 @@ def create_app(
     app.state.db = database
     app.state.service = service
     app.state.storage = storage
+
+    def apply_model_provider(next_settings: Settings) -> None:
+        nonlocal settings
+        settings = next_settings
+        app.state.settings = next_settings
+        service.ai = build_ai_provider(next_settings)
+        if next_settings.embedding_provider == "openai_compatible":
+            service.embeddings = build_embedding_provider(next_settings)
+            service.retriever.embeddings = service.embeddings
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost", "http://127.0.0.1"],
@@ -203,10 +227,19 @@ def create_app(
     def health() -> dict:
         return {"status": "ok", "version": "0.2.0"}
 
+    def asr_configured() -> bool:
+        if settings.asr_provider == "local_whisper":
+            return LocalWhisperProvider.available()
+        return bool(settings.api_key) and settings.asr_provider != "local_rule"
+
     @app.get("/settings/provider")
     def provider_settings() -> dict:
+        preset = resolve_preset(settings.ai_provider)
         return {
             "ai_provider": settings.ai_provider,
+            "ai_label": preset.label,
+            "api_style": preset.api_style,
+            "base_url": settings.base_url,
             "asr_provider": settings.asr_provider,
             "ai_model": settings.ai_model,
             "asr_model": settings.asr_model,
@@ -215,13 +248,56 @@ def create_app(
             "storage_provider": storage.name,
             "local_mode": settings.ai_provider == "local_rule",
             "configured": not getattr(service.ai, "requires_external_upload", False) or bool(settings.api_key),
-            "asr_configured": bool(settings.api_key) and settings.asr_provider != "local_rule",
+            "asr_configured": asr_configured(),
+            "local_asr_model": settings.local_asr_model if settings.asr_provider == "local_whisper" else None,
+            "masked_api_key": mask_api_key(settings.api_key),
             "access_token_configured": bool(settings.access_token),
             "external_upload_requires_confirmation": (
                 getattr(service.ai, "requires_external_upload", False)
                 or getattr(service.embeddings, "requires_external_upload", False)
             ),
         }
+
+    @app.get("/settings/providers")
+    def model_provider_options() -> dict:
+        return {"presets": public_presets(), "current": provider_settings()}
+
+    @app.post("/settings/model-provider")
+    def update_model_provider(payload: ModelProviderUpdate) -> dict:
+        provider = normalize_provider(payload.provider)
+        if not provider or provider not in PROVIDER_PRESETS:
+            raise HTTPException(status_code=422, detail="unsupported model provider")
+        preset = resolve_preset(provider)
+        api_key = (payload.api_key or "").strip() or None
+        if preset.key_required and not api_key:
+            raise HTTPException(status_code=422, detail="请粘贴该 Provider 的官方 API Key")
+        if provider == "local_rule":
+            api_key = None
+        base_url = (payload.base_url or "").strip() or preset.base_url
+        model = (payload.model or "").strip() or preset.default_model
+        save_runtime_provider(settings.data_dir, provider, api_key, base_url, model)
+        next_settings = replace_settings(
+            settings,
+            ai_provider=provider,
+            api_key=api_key,
+            base_url=base_url,
+            ai_model=model,
+        )
+        apply_model_provider(next_settings)
+        return {"current": provider_settings(), "saved": True}
+
+    @app.post("/settings/model-provider/local")
+    def use_local_model_provider() -> dict:
+        save_runtime_provider(settings.data_dir, "local_rule", None, "", "local")
+        next_settings = replace_settings(
+            settings,
+            ai_provider="local_rule",
+            api_key=None,
+            base_url="",
+            ai_model="local",
+        )
+        apply_model_provider(next_settings)
+        return {"current": provider_settings(), "saved": True}
 
     @app.post("/courses", status_code=201)
     def create_course(payload: CourseCreate) -> dict:
@@ -449,7 +525,13 @@ def create_app(
             media_path = storage.materialize(
                 StoredObject(provider=resource["storage_provider"], key=resource["storage_key"])
             )
-        segments = await service.asr.transcribe(str(media_path), resource["mime_type"])
+        if isinstance(service.asr, LocalWhisperProvider):
+            session = database.get_session(resource["session_id"])
+            segments = await service.asr.transcribe(
+                str(media_path), resource["mime_type"], initial_prompt=_local_asr_prompt(session, resource)
+            )
+        else:
+            segments = await service.asr.transcribe(str(media_path), resource["mime_type"])
         database.save_transcript(resource_id, [item.model_dump() for item in segments])
         service.refresh_scores(resource["session_id"])
         return {"resource_id": resource_id, "segments": database.list_transcript_segments(resource_id)}
@@ -483,8 +565,17 @@ def create_app(
                 media_path = storage.materialize(
                     StoredObject(provider=resource["storage_provider"], key=resource["storage_key"])
                 )
-            database.update_job(job_id, stage="transcribing", progress=25)
-            segments = await service.asr.transcribe(str(media_path), resource["mime_type"])
+            if isinstance(service.asr, LocalWhisperProvider):
+                database.update_job(job_id, stage="loading_local_whisper", progress=20)
+            else:
+                database.update_job(job_id, stage="transcribing", progress=25)
+            if isinstance(service.asr, LocalWhisperProvider):
+                session = database.get_session(job["session_id"])
+                segments = await service.asr.transcribe(
+                    str(media_path), resource["mime_type"], initial_prompt=_local_asr_prompt(session, resource)
+                )
+            else:
+                segments = await service.asr.transcribe(str(media_path), resource["mime_type"])
             database.save_transcript(resource_id, [item.model_dump() for item in segments])
             service.refresh_scores(resource["session_id"])
             database.update_job(

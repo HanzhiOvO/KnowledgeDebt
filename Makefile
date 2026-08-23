@@ -19,6 +19,7 @@ dev:
 backend-install:
 	@if [ ! -x .venv/bin/python ]; then python3 -m venv .venv; fi
 	.venv/bin/pip install -r backend/requirements-dev.txt
+	@if [ "$${KNOWLEDGEDEBT_LOCAL_ASR:-1}" != "0" ]; then .venv/bin/pip install -r backend/requirements-local-asr.txt; fi
 
 backend-run:
 	cd backend && ../.venv/bin/uvicorn app.main:app --reload --port 8123

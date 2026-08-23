@@ -130,7 +130,13 @@ fi
 
 if [[ ! -f .env ]]; then
   cp .env.example .env
-  printf '已创建 .env。需要外部 AI/ASR 时，请先填写 OPENAI_API_KEY。\n'
+  printf '已创建 .env。AI Provider 可在 Web 设置页粘贴官方 Key；语音转写默认使用本地 Whisper。\n'
+fi
+if [[ -f .env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
 fi
 
 if (( SKIP_INSTALL == 0 )); then
@@ -144,11 +150,19 @@ if (( SKIP_INSTALL == 0 )); then
   fi
 
   REQUIREMENTS_STAMP=".venv/.knowledgedebt-requirements.sha256"
-  REQUIREMENTS_HASH="$(hash_files backend/requirements.txt backend/requirements-dev.txt || true)"
+  REQUIREMENTS_FILES=(backend/requirements.txt backend/requirements-dev.txt)
+  if [[ "${KNOWLEDGEDEBT_LOCAL_ASR:-1}" != "0" ]]; then
+    REQUIREMENTS_FILES+=(backend/requirements-local-asr.txt)
+  fi
+  REQUIREMENTS_HASH="$(hash_files "${REQUIREMENTS_FILES[@]}" || true)"
   INSTALLED_REQUIREMENTS_HASH="$(test -f "$REQUIREMENTS_STAMP" && sed -n '1p' "$REQUIREMENTS_STAMP" || true)"
   if [[ -z "$REQUIREMENTS_HASH" || "$REQUIREMENTS_HASH" != "$INSTALLED_REQUIREMENTS_HASH" ]]; then
     printf '正在安装后端依赖……\n'
     .venv/bin/pip install -r backend/requirements-dev.txt
+    if [[ "${KNOWLEDGEDEBT_LOCAL_ASR:-1}" != "0" ]]; then
+      printf '正在安装本地语音转写 faster-whisper……\n'
+      .venv/bin/pip install -r backend/requirements-local-asr.txt
+    fi
     [[ -n "$REQUIREMENTS_HASH" ]] && printf '%s\n' "$REQUIREMENTS_HASH" > "$REQUIREMENTS_STAMP"
   else
     printf '后端依赖没有变化，跳过安装。\n'

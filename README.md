@@ -32,7 +32,8 @@ Course Session → 证据 → 课堂还原 → Knowledge Point
 
 ## 已实现能力
 
-- **零配置本地模式**：没有 `OPENAI_API_KEY` 时自动启用本地规则引擎，纯本机即可完成“资料 → 课堂还原 → 学习路径 → 验收 → 清债”；配置 Key 后自动切回 `openai_compatible`；
+- **模型 Provider 一键配置**：Web 设置页内置 OpenAI、DeepSeek、Anthropic（Claude）与 OpenCode Zen 官方预设，粘贴官方 API Key 即保存生效，无需重启；也保留零配置本地规则引擎；
+- **本地语音转写**：默认使用 faster-whisper 本地模型，自动检测中文和英文，音频不离开服务器；CPU 即可运行，首次使用时自动下载 `small` 模型；
 - Next.js 16 / React 19 响应式浏览器端：债务首页、课程、Session、资料、学习与验收工作区；
 - FastAPI 应用 API、可选单用户 Bearer Token，以及不会把令牌暴露到浏览器的同源代理；
 - 无资料、无录音也能创建并管理 Course Session；
@@ -89,14 +90,16 @@ make dev
 
 打开 `http://localhost:3000`；API 位于 `http://127.0.0.1:8123`。不配置 `KNOWLEDGEDEBT_DATABASE_URL` 时自动使用 SQLite，不需要单独安装数据库服务。
 
-若要使用真实托管分析与转写，在 `.env` 至少设置：
+更推荐直接打开 Web「设置」页：选择 OpenAI / DeepSeek / Anthropic / OpenCode Zen 预设，粘贴官方 API Key 即可，配置会以 `0600` 权限保存在服务端数据目录并即时生效。也可以继续使用 `.env`：
 
 ```dotenv
 OPENAI_API_KEY=your-key
+KNOWLEDGEDEBT_AI_PROVIDER=openai_compatible   # 或 deepseek / anthropic / opencode
 OPENAI_BASE_URL=https://api.openai.com/v1
 KNOWLEDGEDEBT_AI_MODEL=gpt-5-mini
-KNOWLEDGEDEBT_ASR_MODEL=gpt-4o-mini-transcribe
 ```
+
+语音转写默认本地 faster-whisper（`KNOWLEDGEDEBT_LOCAL_ASR=1`，模型默认 `small`），无需 API Key。若仍要使用云端 ASR，设置 `KNOWLEDGEDEBT_LOCAL_ASR=0` 与 `KNOWLEDGEDEBT_ASR_PROVIDER=openai_compatible`。
 
 默认 Embedding Provider 为本地确定性 `hash` 实现，因此上传文档不会静默外传文本。外部 Embedding 只会在一次明确同意的索引操作中调用。
 
@@ -166,7 +169,7 @@ compose.yaml            Web + API + PostgreSQL 部署
 
 现在已经完成：知识债务全闭环、证据定位校验、自适应掌握度、后台 Job、Provider / Storage 边界、Web-first UI、PostgreSQL 部署路径和跨层自动化验收。
 
-后续适合推进：更完整的录音播放、面向大资料库的 pgvector 检索、可选本地 Whisper / LLM、无障碍与本地化，以及独立的托管多用户身份方案。
+后续适合推进：更完整的录音播放、面向大资料库的 pgvector 检索、更大的本地 Whisper 模型选择与流式进度、无障碍与本地化，以及独立的托管多用户身份方案。
 
 当前不承诺：社交网络、公共题库、教务系统集成、支付或教师管理产品。
 

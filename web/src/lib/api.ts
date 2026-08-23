@@ -6,6 +6,8 @@ import type {
   Course,
   Debt,
   HomePayload,
+  ModelProviderState,
+  ProviderOptions,
   SessionDetail,
 } from "@/types/domain";
 
@@ -56,5 +58,9 @@ export function getDebts() {
 }
 
 export function getProviderSettings() {
-  return request<Record<string, string | boolean>>("/settings/provider");
+  return request<ModelProviderState>("/settings/provider");
+}
+
+export function getProviderOptions() {
+  return request<ProviderOptions>("/settings/providers");
 }

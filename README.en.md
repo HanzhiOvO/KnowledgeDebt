@@ -20,7 +20,8 @@ A Session exists independently of recordings. Supplementary sources may teach bu
 
 ## Implemented
 
-- **zero-config local mode**: without `OPENAI_API_KEY`, a deterministic local rule engine keeps the full evidence-to-mastery loop usable; adding a key switches back to `openai_compatible`;
+- **one-key model provider setup**: Web settings presets for OpenAI, DeepSeek, Anthropic (Claude), and OpenCode Zen; paste the official API key and apply without a restart;
+- **local speech recognition**: local faster-whisper with automatic Chinese/English detection; audio never leaves the server, CPU-friendly, downloads the `small` model on first use;
 - responsive Next.js 16 / React 19 primary Web client;
 - FastAPI API with optional single-user bearer-token protection and same-origin Web proxy;
 - four bounded evidence channels and recording-union timeline coverage;

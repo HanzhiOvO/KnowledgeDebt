@@ -20,7 +20,7 @@ make dev
 
 Next.js listens on `localhost:3000`; FastAPI listens on `127.0.0.1:8123`. The Web server forwards browser requests through `/api/backend`, so `OPENAI_API_KEY` and `KNOWLEDGEDEBT_ACCESS_TOKEN` are not compiled into browser JavaScript.
 
-`KNOWLEDGEDEBT_AI_PROVIDER=auto`（默认）会在没有 `OPENAI_API_KEY` 时启用本地规则引擎 `local_rule`，因此零配置环境也能完整体验分析、出题、验收闭环；配置 Key 后自动使用 OpenAI-compatible AI。
+`KNOWLEDGEDEBT_AI_PROVIDER=auto`（默认）会在没有 API Key 时启用本地规则引擎 `local_rule`。Web 设置页提供 OpenAI、DeepSeek、Anthropic、OpenCode Zen 的一键 Key 配置，保存到数据目录的 `runtime-provider.json`（0600）并即时生效；环境变量优先级高于 Web 保存的运行时配置。
 
 With `KNOWLEDGEDEBT_DATABASE_URL` empty, the backend creates `knowledgedebt.sqlite3` under `KNOWLEDGEDEBT_DATA_DIR`. Uploaded resources and derived page images stay below the same data root.
 
@@ -87,7 +87,15 @@ Keep buckets private. StorageProvider materializes a selected object only when a
 
 ## Provider profiles
 
-The default AI and ASR contract is OpenAI-compatible when an API key exists:
+The default AI contract is OpenAI-compatible when an API key exists. The default ASR provider is local faster-whisper (`local_whisper`), so audio does not leave the machine:
+
+| `KNOWLEDGEDEBT_AI_PROVIDER` | Preset base URL | Default model | Notes |
+| --- | --- | --- | --- |
+| `openai_compatible` | `https://api.openai.com/v1` | `gpt-5-mini` | OpenAI 官方 Key |
+| `deepseek` | `https://api.deepseek.com` | `deepseek-chat` | DeepSeek 官方 Key |
+| `anthropic` | `https://api.anthropic.com` | `claude-sonnet-4-5` | 原生 Messages API |
+| `opencode` | `https://opencode.ai/zen/v1` | `gpt-5.5` | OpenCode Zen 官方 Key |
+| `local_rule` | — | `local` | 零配置本地规则引擎 |
 
 ```dotenv
 OPENAI_BASE_URL=https://api.openai.com/v1

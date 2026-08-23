@@ -23,13 +23,16 @@ The confirmation flag applies to one request or one job. It is stored with job p
 | --- | --- | --- |
 | Analysis | Session title/notes, retrieved transcript segments, retrieved document chunks, retrieval query when external embeddings are selected | original audio/video binaries, local paths, unselected chunks |
 | Assessment / answer evaluation | question, answer, rubric on the server side, relevant Knowledge Points, retrieved evidence | unrelated Sessions, original media binaries, local paths |
-| Transcription | one selected original audio/video object, filename and MIME type | other Session resources, course history, local paths |
+| Transcription (local Whisper) | the selected audio/video file on the local server; nothing leaves the server | any network transfer, other Session resources, local paths |
+| Transcription (cloud ASR) | one selected original audio/video object, filename and MIME type | other Session resources, course history, local paths |
 | Indexing | text from chunks of the listed resources | original documents, media binaries, unrelated resources, local paths |
 | Remediation | weak Knowledge Point, student reason, retrieved evidence | unrelated Sessions, original media binaries, local paths |
 
 The default local hash embedding provider avoids external indexing and query calls entirely. If external embeddings are configured, upload only extracts and stores chunks; it does not call the provider automatically.
 
 When no API key is configured, AI also uses the built-in `local_rule` engine. It reads only retrieved chunks and never opens a network connection. Its remediation operation is subject to the same operation-specific consent boundary as analysis and assessment.
+
+Speech recognition defaults to the local faster-whisper provider. Original audio/video stays on the self-hosted server during transcription and model inference. The Whisper model is downloaded from Hugging Face on first use; subsequent transcription jobs are fully offline.
 
 ## Evidence minimization and validation
 

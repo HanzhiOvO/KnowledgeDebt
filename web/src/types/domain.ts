@@ -189,6 +189,41 @@ export interface SessionDetail extends SessionSummary {
   reconstruction?: Reconstruction | null;
 }
 
+export interface ProviderPreset {
+  id: string;
+  label: string;
+  base_url: string;
+  default_model: string;
+  api_style: string;
+  key_required: boolean;
+  description: string;
+}
+
+export interface ModelProviderState {
+  ai_provider: string;
+  ai_label?: string;
+  api_style?: string;
+  base_url?: string;
+  asr_provider: string;
+  ai_model: string;
+  asr_model: string;
+  embedding_provider: string;
+  embedding_model: string;
+  storage_provider: string;
+  local_mode: boolean;
+  configured: boolean;
+  asr_configured: boolean;
+  local_asr_model?: string | null;
+  masked_api_key?: string | null;
+  access_token_configured: boolean;
+  external_upload_requires_confirmation: boolean;
+}
+
+export interface ProviderOptions {
+  presets: ProviderPreset[];
+  current: ModelProviderState;
+}
+
 export interface HomePayload {
   sessions: SessionSummary[];
   open_debt_count: number;

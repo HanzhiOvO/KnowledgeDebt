@@ -159,9 +159,14 @@ def test_auto_provider_resolution_follows_api_key(monkeypatch):
 
     local = Settings.from_env()
     assert local.ai_provider == "local_rule"
-    assert local.asr_provider == "local_rule"
+    assert local.asr_provider == "local_whisper"
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     remote = Settings.from_env()
     assert remote.ai_provider == "openai_compatible"
-    assert remote.asr_provider == "openai_compatible"
+    # 语音转写默认仍走本地 Whisper；云端 ASR 需要显式开启。
+    assert remote.asr_provider == "local_whisper"
+
+    monkeypatch.setenv("KNOWLEDGEDEBT_LOCAL_ASR", "0")
+    cloud_asr = Settings.from_env()
+    assert cloud_asr.asr_provider == "openai_compatible"

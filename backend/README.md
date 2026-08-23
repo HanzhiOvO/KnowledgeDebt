@@ -7,7 +7,7 @@
 - `app/main.py`：FastAPI 路由、鉴权、隐私同意清单与 Job 编排；
 - `app/service.py`：课堂还原、验收、补课与掌握度业务流程；
 - `app/database.py`：SQLite / PostgreSQL 仓储兼容层；
-- `app/providers/`：AI、ASR 与 Embedding Provider；
+- `app/providers/`：AI（OpenAI-compatible / DeepSeek / Anthropic / OpenCode / 本地规则）、ASR（本地 Whisper / OpenAI-compatible）与 Embedding Provider；
 - `app/retrieval/`：课堂还原 / 从零学习双检索策略；
 - `app/storage/`：本地与 S3 兼容存储；
 - `alembic/`：版本化数据库迁移；
@@ -25,3 +25,5 @@ make backend-test
 ```
 
 开发默认使用 SQLite；生产部署支持 PostgreSQL 16。数据库变更必须同时提供 Alembic migration 和升级测试。
+
+`make backend-install` 默认同时安装本地语音转写依赖 `requirements-local-asr.txt`；设 `KNOWLEDGEDEBT_LOCAL_ASR=0` 可跳过。
