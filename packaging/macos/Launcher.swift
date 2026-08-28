@@ -142,7 +142,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let ffmpeg = resources.appendingPathComponent("runtime/ffmpeg/bin/ffmpeg")
         let ffprobe = resources.appendingPathComponent("runtime/ffmpeg/bin/ffprobe")
         let whisper = resources.appendingPathComponent("runtime/whisper/bin/whisper-cli")
-        for required in [backendExecutable, nodeExecutable, webServer, ffmpeg, ffprobe, whisper] where !FileManager.default.fileExists(atPath: required.path) {
+        let vadModel = resources.appendingPathComponent("runtime/whisper/models/ggml-silero-v6.2.0.bin")
+        for required in [backendExecutable, nodeExecutable, webServer, ffmpeg, ffprobe, whisper, vadModel] where !FileManager.default.fileExists(atPath: required.path) {
             throw LauncherError.missingRuntime(required.path)
         }
 
@@ -172,6 +173,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "KNOWLEDGEDEBT_FFMPEG_PATH": ffmpeg.path,
             "KNOWLEDGEDEBT_LOCAL_ASR_BINARY": whisper.path,
             "KNOWLEDGEDEBT_LOCAL_ASR_MODEL_DIR": dataRoot.appendingPathComponent("models", isDirectory: true).path,
+            "KNOWLEDGEDEBT_LOCAL_ASR_VAD_ENABLED": "true",
+            "KNOWLEDGEDEBT_LOCAL_ASR_VAD_MODEL": vadModel.path,
         ]) { _, latest in latest }
         backendProcess.standardOutput = backendLog
         backendProcess.standardError = backendLog

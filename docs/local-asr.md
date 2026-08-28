@@ -27,28 +27,31 @@
 
 ## 原生应用的模型管理
 
-macOS 原生安装包已经固定并内置 whisper.cpp `1.9.3` Apple Silicon CLI 和 Metal 后端，但不会把大型模型塞进应用。打开“设置 → 本地转写模型”后，可主动选择以下固定目录项：
+macOS 原生安装包已经固定并内置 whisper.cpp `1.9.3` Apple Silicon CLI、Metal 后端和不到 1 MB 的 Silero VAD 静音检测模型，但不会把大型转写模型塞进应用。打开“设置 → 本地转写模型”后，可主动选择以下固定目录项：
 
 | 模型 | 下载与磁盘占用 | 速度 | 准确率 | 建议场景 |
 | --- | ---: | --- | --- | --- |
 | Whisper Small Q5 | 190,085,487 字节 | 较快 | 较好 | 内存较小的 Mac、短课或先体验 |
-| **Whisper Medium Q5** | 539,212,467 字节 | 中等 | 高 | 大学课堂与技术术语，默认推荐 |
+| **Whisper Large v3 Turbo Q5** | 574,041,195 字节 | CPU 中等 / Metal 较快 | 高（接近 Large v3） | 大学课堂与技术术语，默认推荐 |
+| Whisper Medium Q5 | 539,212,467 字节 | 中等 | 高 | 已有 Medium 工作流或需要兼容旧版运行时 |
 | Whisper Medium Q8 | 823,369,779 字节 | 较慢 | 更高 | 术语密集课程，优先识别质量 |
 
 目录固定到 `ggerganov/whisper.cpp` 仓库的审核提交，不接受用户提供下载 URL。每次下载都需要明确确认，并执行磁盘空间预检、流式写入和最终 SHA-256/精确大小校验；下载分片保存在用户数据目录，取消或退出后可以继续。完整文件通过原子替换启用，损坏文件不会被当成可用模型。正在使用的模型不能直接删除。
 
 原生应用模型位置是 `~/Library/Application Support/KnowledgeDebt/models/`。没有模型时，录音和上传仍正常保存并显示“等待配置转写”，不会自动改用外部服务。更多安装与数据管理说明见 [macos.md](macos.md)。
 
-## 无 GPU 服务器选型（16GB 及以上内存）
+## 无 GPU / 低配 CPU 选型
 
 | 模型 | 磁盘 | 常驻内存 | 中文效果 | 速度参考（CPU） |
 | --- | --- | --- | --- | --- |
 | `ggml-tiny`（78 MB） | 极小 | ~0.4 GB | 只能听出大意，技术名词基本错 | 本机实测 3.18× 实时 |
 | `ggml-small`（466 MB） | 小 | ~1 GB | 可用，专业名词易错 | 约 2–4× 实时 |
-| **`ggml-medium`（1.5 GB，推荐）** | 中 | ~2.6 GB | 明显更好，适合课堂 | 约 1–2× 实时 |
-| `ggml-large-v3-turbo`（1.6 GB） | 中 | ~2.5 GB | 接近 large，速度较快 | 视核心数波动大 |
+| `ggml-medium`（1.5 GB） | 中 | ~2.6 GB | 明显更好，适合课堂 | 约 1–2× 实时 |
+| **`ggml-large-v3-turbo-q5_0`（574 MB，推荐）** | 中 | 低于完整 Medium/Large | 本项目样本中准确识别 STM32 和 51 单片机 | 纯 CPU 接近实时，视核心数波动 |
 
-`tiny` 的实测结论（本机 macOS + whisper.cpp 1.9.2，真实 STM32 课程录音 60 秒）：速度 3.18× 实时、时间戳正确，但把 “STM32” 听成 “还是天不沾二”、“51 单片机” 听成 “5 月大面机”。**课堂用途不要用 tiny**，它只适合验证链路是否连通。`small`/`medium` 才有可用的术语准确度。
+`tiny` 的实测结论（真实 STM32 课程录音 60 秒）：时间戳正确，但把 “STM32” 和 “51 单片机”持续识别错。Small Q5 在同一样本上纯 CPU 只用约 21.9 秒，但两个核心术语仍错；Large v3 Turbo Q5 用约 61.3 秒，术语全部正确。**课堂用途不要用 tiny；技术术语优先时也不要因 CPU 较慢自动降到 Small。**
+
+上述数字来自 Apple Silicon 8 逻辑核心机器、whisper.cpp 1.9.3、4 线程并强制关闭 GPU 的可重复对照；它是模型间的相对参考，不是对所有 CPU 的速度承诺。在同一段连续语音上，保守 VAD 开启前后 Turbo 转写文本逐句一致，耗时从 70.5 秒降到 61.3 秒；在三分之二为静音的样本上，CPU 耗时约省 47%，且不再为静音生成幻觉文本。
 
 判断标准：**转写速度必须快于录音时长**，否则会持续积压。先用一节真实课堂录音实测，再决定档位：
 
@@ -56,7 +59,7 @@ macOS 原生安装包已经固定并内置 whisper.cpp `1.9.3` Apple Silicon CLI
 .venv/bin/python backend/scripts/local_asr_smoke.py 你的录音.aac --seconds 60
 ```
 
-脚本会打印实时倍速、分段时间戳和前几段文本，不写数据库、不外发、不改动原文件。8 核以上 CPU 建议从 `medium` 起步；核心较少时先用 `small`。
+脚本会打印实时倍速、分段时间戳和前几段文本，不写数据库、不外发、不改动原文件。先用 Turbo Q5 跑真实课程样本；只有在本机确实积压、且已人工确认 Small Q5 的术语质量可接受时，才切到 Small Q5。
 
 > 没有 NVIDIA GPU 时不要安装 CUDA 栈，也不要下载 Qwen3-ASR / faster-whisper 的 GPU 权重。
 
@@ -72,17 +75,22 @@ Debian / Ubuntu（源码编译，建议固定 tag）：
 
 ```bash
 sudo apt-get install -y build-essential cmake git
-git clone --depth 1 --branch v1.7.4 https://github.com/ggml-org/whisper.cpp.git
+git clone --depth 1 --branch b4938 https://github.com/ggml-org/whisper.cpp.git
 cd whisper.cpp && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j"$(nproc)"
 sudo install -m755 build/bin/whisper-cli /usr/local/bin/whisper-cli
 ```
 
-下载模型到数据目录（新环境默认 `backend/data/models`）：
+下载经过固定提交和哈希校验的转写模型与 VAD 模型到数据目录（新环境默认 `backend/data/models`）：
 
 ```bash
 mkdir -p backend/data/models
-curl -L -o backend/data/models/ggml-medium.bin \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin
+curl -L -o backend/data/models/ggml-large-v3-turbo-q5_0.bin \
+  'https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo-q5_0.bin?download=true'
+echo '394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2  backend/data/models/ggml-large-v3-turbo-q5_0.bin' | shasum -a 256 -c -
+
+curl -L -o backend/data/models/ggml-silero-v6.2.0.bin \
+  'https://huggingface.co/ggml-org/whisper-vad/resolve/9ffd54a1e1ee413ddf265af9913beaf518d1639b/ggml-silero-v6.2.0.bin?download=true'
+echo '2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987  backend/data/models/ggml-silero-v6.2.0.bin' | shasum -a 256 -c -
 ```
 
 模型文件不属于仓库内容，不要提交。
@@ -93,12 +101,14 @@ curl -L -o backend/data/models/ggml-medium.bin \
 
 ```bash
 KNOWLEDGEDEBT_LOCAL_ASR_BINARY=whisper-cli          # 或绝对路径
-KNOWLEDGEDEBT_LOCAL_ASR_MODEL=ggml-medium.bin       # 绝对路径、模型目录下文件名，或 medium 简称
+KNOWLEDGEDEBT_LOCAL_ASR_MODEL=ggml-large-v3-turbo-q5_0.bin  # 绝对路径或模型目录下文件名
 KNOWLEDGEDEBT_LOCAL_ASR_MODEL_DIR=                  # 留空则用 <数据目录>/models
 KNOWLEDGEDEBT_LOCAL_ASR_LANGUAGE=zh
 KNOWLEDGEDEBT_LOCAL_ASR_THREADS=0                   # 0 表示交给 whisper.cpp 决定
 KNOWLEDGEDEBT_LOCAL_ASR_TIMEOUT_SECONDS=3600        # 单个分片的墙钟上限
 KNOWLEDGEDEBT_LOCAL_ASR_INITIAL_PROMPT=             # 可选：课程术语提示（不是热词接口）
+KNOWLEDGEDEBT_LOCAL_ASR_VAD_ENABLED=true             # 跳过确定静音；不降低解码搜索质量
+KNOWLEDGEDEBT_LOCAL_ASR_VAD_MODEL=                   # 可选绝对路径；原生包自动填入
 ```
 
 私网 ASR 服务额外配置：
@@ -140,7 +150,9 @@ KNOWLEDGEDEBT_LOCAL_ASR_SERVICE_MODEL=ggml-medium
 
 ## 行为与边界
 
-- **格式**：whisper.cpp 只读 16kHz 单声道 WAV，适配器会先用 FFmpeg 把分片转成 WAV，转换文件放在临时目录并在结束后删除，原始分片不变；
+- **格式**：whisper.cpp 1.9.3 直接读取 FLAC/MP3/OGG/WAV；已规范化的 16kHz 单声道 FLAC 分片不再重复转 WAV。只有 M4A 等不支持容器才在临时目录转换，原始分片不变；
+- **低配 CPU**：线程为 `0` 时沿用 whisper.cpp 的 `min(4, 逻辑核心数)` 策略，避免双核机器过度订阅；不自动降模型、不减少 beam size 或 best-of；
+- **静音加速**：找到经校验的 Silero VAD 模型时，用低阈值、长静音间隔和 400ms 语音留白跳过确定静音；模型缺失或关闭时自动回退完整音频；
 - **时间戳**：优先读取 JSON 的 `offsets`（毫秒），缺失时回退解析 `timestamps`；两者都没有会直接报错，不会伪造时间戳；
 - **超时**：超过配置秒数会先 `SIGTERM` 再 `SIGKILL`，并给出可执行的中文建议；
 - **取消**：在分片运行中点「取消」会终止本地进程，该分片回到 `pending`，已完成分片保留，重试时只跑剩余分片；
@@ -173,6 +185,7 @@ docker compose --profile local-asr up --build
 | 模型显示“文件损坏” | 文件大小或 SHA-256 与固定目录不一致；点击重新下载，不要继续使用该文件 |
 | 下载中断或应用退出 | 已下载分片仍保留；重新打开设置并点击继续下载 |
 | 「需要 FFmpeg」 | 安装 FFmpeg 或设置 `KNOWLEDGEDEBT_FFMPEG_PATH`，见 [ffmpeg.md](ffmpeg.md) |
+| 静音加速显示“未找到 VAD 模型” | 不影响准确转写，只是不跳过静音；原生包应自带，源码模式可设置 `KNOWLEDGEDEBT_LOCAL_ASR_VAD_MODEL` |
 | 「超过 N 秒仍未完成」 | 模型过大或分片过长；调小分片、换小模型或提高超时 |
 | 「JSON 结果文件」相关错误 | whisper.cpp 版本过旧，不支持 `-oj/--output-json`，请升级 |
 | 私网服务返回 HTTP 400/422 | 多为格式不被接受；把 `KNOWLEDGEDEBT_LOCAL_ASR_SERVICE_CONVERT_WAV` 设为 `true` |
@@ -181,4 +194,4 @@ docker compose --profile local-asr up --build
 
 ## 回归测试
 
-`backend/tests/test_local_asr.py` 使用真实子进程与 127.0.0.1 回环 HTTP 服务，不访问外部网络、不下载模型，覆盖：命令行契约与 JSON 时间戳解析、时钟时间戳回退、非 WAV 分片转换、缺少运行时/模型/FFmpeg 的可执行报错、真实 stderr 透出、超时与取消真正杀掉进程、私网地址守卫、默认路由选择、运行中取消后的断点续跑，以及 API 层拒绝公网地址并强制本地标记。`backend/tests/test_local_models.py` 另行覆盖下载确认、Range 续传、取消、重启恢复、校验、损坏、切换、删除保护与 API。
+`backend/tests/test_local_asr.py` 使用真实子进程与 127.0.0.1 回环 HTTP 服务，不访问外部网络、不下载模型，覆盖：命令行契约与 JSON 时间戳解析、FLAC/MP3/OGG/WAV 直读、不支持容器转换、CPU 线程策略、保守 VAD 参数与完整音频回退、解码质量参数不被降级、缺少运行时/模型/FFmpeg 的可执行报错、超时取消、私网地址守卫和断点续跑。`backend/tests/test_local_models.py` 另行覆盖下载确认、Range 续传、取消、重启恢复、校验、损坏、切换、删除保护与 API。

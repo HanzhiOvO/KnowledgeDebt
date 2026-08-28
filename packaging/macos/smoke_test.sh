@@ -13,6 +13,7 @@ KD_SMOKE_API_PORT=18124
 KD_SMOKE_WEB_PORT=18125
 KD_SMOKE_API_PID=""
 KD_SMOKE_WEB_PID=""
+KD_SMOKE_VAD_MODEL="$KD_SMOKE_RESOURCES/runtime/whisper/models/ggml-silero-v6.2.0.bin"
 
 cleanup() {
   for pid in "$KD_SMOKE_WEB_PID" "$KD_SMOKE_API_PID"; do
@@ -39,12 +40,18 @@ for binary in \
   fi
 done
 
+[[ -s "$KD_SMOKE_VAD_MODEL" ]] || { echo "缺少静音加速模型：$KD_SMOKE_VAD_MODEL" >&2; exit 1; }
+echo "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987  $KD_SMOKE_VAD_MODEL" | \
+  shasum -a 256 -c - >/dev/null
+
 for document in \
   "$KD_SMOKE_RESOURCES/DOCUMENTATION/DEFAULT_CONFIGURATION.env.example" \
   "$KD_SMOKE_RESOURCES/DOCUMENTATION/README.zh-CN.md" \
   "$KD_SMOKE_RESOURCES/DOCUMENTATION/macOS-安装与数据管理.md" \
   "$KD_SMOKE_RESOURCES/DOCUMENTATION/Provider-能力矩阵.md" \
-  "$KD_SMOKE_RESOURCES/DOCUMENTATION/v0.2-发布与验收.md"; do
+  "$KD_SMOKE_RESOURCES/DOCUMENTATION/v0.2-发布与验收.md" \
+  "$KD_SMOKE_RESOURCES/LICENSES/Silero-VAD-MIT.txt" \
+  "$KD_SMOKE_RESOURCES/LICENSES/THIRD_PARTY_NOTICES.md"; do
   [[ -s "$document" ]] || { echo "缺少应用内中文文档：$document" >&2; exit 1; }
 done
 
@@ -69,6 +76,7 @@ KNOWLEDGEDEBT_APP_VERSION="0.2.0" \
 KNOWLEDGEDEBT_FFMPEG_PATH="$KD_SMOKE_RESOURCES/runtime/ffmpeg/bin/ffmpeg" \
 KNOWLEDGEDEBT_LOCAL_ASR_BINARY="$KD_SMOKE_RESOURCES/runtime/whisper/bin/whisper-cli" \
 KNOWLEDGEDEBT_LOCAL_ASR_MODEL_DIR="$KD_SMOKE_TEMP/data/models" \
+KNOWLEDGEDEBT_LOCAL_ASR_VAD_MODEL="$KD_SMOKE_VAD_MODEL" \
 "$KD_SMOKE_RESOURCES/backend/knowledgedebt-api" >"$KD_SMOKE_TEMP/backend.log" 2>&1 &
 KD_SMOKE_API_PID=$!
 
@@ -81,6 +89,8 @@ curl -fsS "http://127.0.0.1:$KD_SMOKE_API_PORT/maintenance/storage" | \
   grep -q '"needs_refresh":true'
 KD_SMOKE_PROVIDER_SETTINGS="$(curl -fsS "http://127.0.0.1:$KD_SMOKE_API_PORT/settings/provider")"
 printf '%s' "$KD_SMOKE_PROVIDER_SETTINGS" | grep -q '"binary_ready":true'
+printf '%s' "$KD_SMOKE_PROVIDER_SETTINGS" | grep -q '"vad_ready":true'
+printf '%s' "$KD_SMOKE_PROVIDER_SETTINGS" | grep -q '"id":"large-v3-turbo-q5_0"'
 printf '%s' "$KD_SMOKE_PROVIDER_SETTINGS" | grep -q '"id":"medium-q5_0"'
 
 KD_SMOKE_WAV="$KD_SMOKE_TEMP/native-smoke.wav"

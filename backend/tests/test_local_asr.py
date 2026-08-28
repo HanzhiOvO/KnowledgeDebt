@@ -30,6 +30,7 @@ from app.providers.local_asr import (
     LocalWhisperCppProvider,
     WhisperCppRuntime,
     assert_local_endpoint,
+    effective_whisper_threads,
     is_local_endpoint,
 )
 from app.secrets import SecretStore
@@ -204,6 +205,13 @@ def test_whisper_cpp_parses_real_json_offsets_and_never_touches_source(tmp_path:
     assert list(scratch.iterdir()) == []
 
 
+def test_whisper_cpp_auto_threads_matches_upstream_cpu_safe_default():
+    assert effective_whisper_threads(0, cpu_count=1) == 1
+    assert effective_whisper_threads(0, cpu_count=2) == 2
+    assert effective_whisper_threads(0, cpu_count=8) == 4
+    assert effective_whisper_threads(6, cpu_count=2) == 6
+
+
 def test_whisper_cpp_falls_back_to_clock_timestamps(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("KD_STUB_MODE", "clock_only")
     source = wav_chunk(tmp_path / "chunk-0000.wav")
@@ -214,34 +222,97 @@ def test_whisper_cpp_falls_back_to_clock_timestamps(tmp_path: Path, monkeypatch)
     assert [(item.start_time, item.end_time) for item in segments] == [(0.0, 2.5), (2.5, 5.0)]
 
 
-def test_whisper_cpp_converts_non_wav_chunk_before_transcribing(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("suffix", [".flac", ".mp3", ".ogg", ".wav"])
+def test_whisper_cpp_uses_supported_audio_directly(
+    tmp_path: Path, monkeypatch, suffix: str
+):
+    argv_log = tmp_path / "argv.txt"
+    monkeypatch.setenv("KD_STUB_ARGV", str(argv_log))
+    monkeypatch.setenv("KD_STUB_MODE", "ok")
+    source = tmp_path / f"chunk-0000{suffix}"
+    source.write_bytes(b"supported audio payload retained as-is")
+    provider = LocalWhisperCppProvider(
+        make_runtime(tmp_path, ffmpeg_path=str(tmp_path / "missing-ffmpeg"))
+    )
+
+    segments = asyncio.run(provider.transcribe(str(source), None))
+
+    assert len(segments) == 2
+    handed_to_whisper = argv_log.read_text(encoding="utf-8").split("\n")
+    assert handed_to_whisper[handed_to_whisper.index("-f") + 1] == str(source)
+    assert "-np" in handed_to_whisper
+    assert source.read_bytes() == b"supported audio payload retained as-is"
+
+
+def test_whisper_cpp_converts_unsupported_container_before_transcribing(
+    tmp_path: Path, monkeypatch
+):
     argv_log = tmp_path / "argv.txt"
     monkeypatch.setenv("KD_STUB_ARGV", str(argv_log))
     monkeypatch.setenv("KD_STUB_MODE", "ok")
     ffmpeg = write_stub(tmp_path / "ffmpeg-stub", FFMPEG_STUB)
-    source = tmp_path / "chunk-0000.flac"
-    source.write_bytes(b"fake flac payload retained as-is")
+    source = tmp_path / "chunk-0000.m4a"
+    source.write_bytes(b"unsupported container retained as-is")
     provider = LocalWhisperCppProvider(make_runtime(tmp_path, ffmpeg_path=ffmpeg))
 
-    segments = asyncio.run(provider.transcribe(str(source), "audio/flac"))
+    segments = asyncio.run(provider.transcribe(str(source), "audio/mp4"))
 
     assert len(segments) == 2
     handed_to_whisper = argv_log.read_text(encoding="utf-8").split("\n")
     converted = handed_to_whisper[handed_to_whisper.index("-f") + 1]
     assert converted.endswith("chunk-0000-16k.wav")
-    assert source.read_bytes() == b"fake flac payload retained as-is"
+    assert source.read_bytes() == b"unsupported container retained as-is"
 
 
-def test_whisper_cpp_without_ffmpeg_keeps_source_and_explains(tmp_path: Path):
-    source = tmp_path / "chunk-0000.flac"
-    source.write_bytes(b"retained flac")
-    provider = LocalWhisperCppProvider(
-        make_runtime(tmp_path, ffmpeg_path=str(tmp_path / "missing-ffmpeg"))
-    )
+def test_whisper_cpp_without_ffmpeg_keeps_unsupported_source_and_explains(tmp_path: Path):
+    source = tmp_path / "chunk-0000.m4a"
+    source.write_bytes(b"retained m4a")
+    provider = LocalWhisperCppProvider(make_runtime(tmp_path, ffmpeg_path=str(tmp_path / "missing-ffmpeg")))
 
     with pytest.raises(ProviderNotConfigured, match="需要 FFmpeg"):
-        asyncio.run(provider.transcribe(str(source), "audio/flac"))
-    assert source.read_bytes() == b"retained flac"
+        asyncio.run(provider.transcribe(str(source), "audio/mp4"))
+    assert source.read_bytes() == b"retained m4a"
+
+
+def test_whisper_cpp_uses_conservative_vad_without_lowering_decoder_quality(
+    tmp_path: Path, monkeypatch
+):
+    argv_log = tmp_path / "argv.txt"
+    monkeypatch.setenv("KD_STUB_ARGV", str(argv_log))
+    monkeypatch.setenv("KD_STUB_MODE", "ok")
+    vad_model = tmp_path / "ggml-silero-v6.2.0.bin"
+    vad_model.write_bytes(b"verified vad model")
+    source = tmp_path / "chunk-0000.flac"
+    source.write_bytes(b"prepared flac")
+    provider = LocalWhisperCppProvider(
+        make_runtime(tmp_path, threads=0, vad_model=str(vad_model))
+    )
+
+    segments = asyncio.run(provider.transcribe(str(source), "audio/flac"))
+
+    assert len(segments) == 2
+    invocation = argv_log.read_text(encoding="utf-8").split("\n")
+    assert invocation[invocation.index("--vad-model") + 1] == str(vad_model)
+    assert invocation[invocation.index("--vad-threshold") + 1] == "0.35"
+    assert invocation[invocation.index("--vad-min-silence-duration-ms") + 1] == "1200"
+    assert invocation[invocation.index("--vad-speech-pad-ms") + 1] == "400"
+    assert "-t" not in invocation
+    # 加速只排除确定静音，不降低 whisper.cpp 默认的解码搜索质量。
+    assert "-bo" not in invocation and "--best-of" not in invocation
+    assert "-bs" not in invocation and "--beam-size" not in invocation
+
+
+def test_missing_optional_vad_model_falls_back_to_full_audio(tmp_path: Path, monkeypatch):
+    argv_log = tmp_path / "argv.txt"
+    monkeypatch.setenv("KD_STUB_ARGV", str(argv_log))
+    monkeypatch.setenv("KD_STUB_MODE", "ok")
+    source = wav_chunk(tmp_path / "chunk-0000.wav")
+    provider = LocalWhisperCppProvider(
+        make_runtime(tmp_path, vad_model=str(tmp_path / "missing-vad.bin"))
+    )
+
+    assert asyncio.run(provider.transcribe(str(source), "audio/wav"))
+    assert "--vad" not in argv_log.read_text(encoding="utf-8").split("\n")
 
 
 def test_whisper_cpp_missing_runtime_is_actionable(tmp_path: Path):
@@ -553,6 +624,10 @@ def test_registry_builds_local_whisper_profile_and_reports_readiness(tmp_path: P
     assert status["ready"] is True
     assert status["binary_ready"] and status["model_ready"]
     assert status["language"] == "zh"
+    assert status["effective_threads"] >= 1
+    assert status["direct_input_formats"] == ["FLAC", "MP3", "OGG", "WAV"]
+    assert status["vad_enabled"] is True
+    assert status["vad_ready"] is False
 
     registry.ensure_environment_profiles()
     defaults = automation.get_provider_defaults()
@@ -813,8 +888,8 @@ def test_api_rejects_public_base_url_and_forces_local_flag(tmp_path: Path):
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="需要真实 FFmpeg 才能验证真实音频转换")
-def test_real_ffmpeg_produces_whisper_ready_wav(tmp_path: Path, monkeypatch):
-    """用真实 FFmpeg 生成音频并验证转换链路，不依赖任何外部网络。"""
+def test_real_flac_is_handed_directly_to_whisper_cpp(tmp_path: Path, monkeypatch):
+    """用真实 FFmpeg 生成 FLAC，验证 CLI 直读路径不依赖外部网络。"""
 
     monkeypatch.setenv("KD_STUB_MODE", "ok")
     source = tmp_path / "tone.flac"
@@ -843,5 +918,5 @@ def test_real_ffmpeg_produces_whisper_ready_wav(tmp_path: Path, monkeypatch):
 
     assert len(segments) == 2
     handed = argv_log.read_text(encoding="utf-8").split("\n")
-    assert handed[handed.index("-f") + 1].endswith("-16k.wav")
+    assert handed[handed.index("-f") + 1] == str(source)
     assert source.is_file()

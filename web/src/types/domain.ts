@@ -482,8 +482,13 @@ export interface LocalASRStatus {
   model_bytes?: number | null;
   language: string;
   threads: number;
+  effective_threads: number;
   timeout_seconds: number;
   ffmpeg_ready: boolean;
+  direct_input_formats: string[];
+  vad_enabled: boolean;
+  vad_ready: boolean;
+  vad_model_resolved?: string | null;
   ready: boolean;
   profile_id?: string | null;
   active: boolean;

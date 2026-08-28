@@ -37,6 +37,8 @@ class Settings:
     local_asr_threads: int = 0
     local_asr_timeout_seconds: int = 3600
     local_asr_initial_prompt: str = ""
+    local_asr_vad_enabled: bool = True
+    local_asr_vad_model: str = ""
     local_asr_service_base_url: str = ""
     local_asr_service_model: str = ""
     local_asr_service_convert_wav: bool = False
@@ -89,6 +91,11 @@ class Settings:
                 60, int(os.getenv("KNOWLEDGEDEBT_LOCAL_ASR_TIMEOUT_SECONDS", "3600"))
             ),
             local_asr_initial_prompt=os.getenv("KNOWLEDGEDEBT_LOCAL_ASR_INITIAL_PROMPT", "").strip(),
+            local_asr_vad_enabled=os.getenv(
+                "KNOWLEDGEDEBT_LOCAL_ASR_VAD_ENABLED", "true"
+            ).lower()
+            not in {"0", "false", "no"},
+            local_asr_vad_model=os.getenv("KNOWLEDGEDEBT_LOCAL_ASR_VAD_MODEL", "").strip(),
             local_asr_service_base_url=os.getenv("KNOWLEDGEDEBT_LOCAL_ASR_SERVICE_URL", "").strip(),
             local_asr_service_model=os.getenv("KNOWLEDGEDEBT_LOCAL_ASR_SERVICE_MODEL", "").strip(),
             # whisper.cpp server 只接受 WAV；faster-whisper 类服务可直接接收 FLAC。
