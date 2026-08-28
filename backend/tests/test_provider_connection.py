@@ -41,6 +41,52 @@ def registry(tmp_path, monkeypatch, handler) -> tuple[AutomationRepository, Prov
     return repository, instance
 
 
+def test_environment_ai_profile_refreshes_and_becomes_default_after_key_is_added(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    repository = AutomationRepository(Database(tmp_path / "provider-refresh.sqlite3"))
+    initial = settings(tmp_path)
+    ProviderRegistry(repository, SecretStore(None), initial).ensure_environment_profiles()
+    assert repository.get_provider_defaults()["ai"]["adapter"] == "local_rule"
+
+    monkeypatch.setenv("OPENAI_API_KEY", "server-only-key")
+    changed = Settings(
+        data_dir=tmp_path / "data",
+        ai_provider="opencode",
+        asr_provider="openai",
+        api_key="server-only-key",
+        base_url="https://opencode.ai/zen/go/v1",
+        ai_model="deepseek-v4-flash",
+        asr_model="gpt-4o-mini-transcribe",
+    )
+    ProviderRegistry(repository, SecretStore(None), changed).ensure_environment_profiles()
+
+    default_ai = repository.get_provider_defaults()["ai"]
+    assert default_ai["name"] == "环境变量 · AI"
+    assert default_ai["vendor"] == "opencode"
+    assert default_ai["base_url"] == "https://opencode.ai/zen/go/v1"
+    assert default_ai["default_model"] == "deepseek-v4-flash"
+    assert default_ai["credential_configured"] is True
+
+    repository.update_provider_test(default_ai["id"], "succeeded", "server configured")
+    ProviderRegistry(repository, SecretStore(None), changed).ensure_environment_profiles()
+    assert repository.get_provider_profile(default_ai["id"])["last_test_status"] == "succeeded"
+
+    local_again = Settings(
+        data_dir=tmp_path / "data",
+        ai_provider="local_rule",
+        asr_provider="openai",
+        api_key=None,
+        base_url="https://opencode.ai/zen/go/v1",
+        ai_model="deepseek-v4-flash",
+        asr_model="gpt-4o-mini-transcribe",
+    )
+    monkeypatch.delenv("OPENAI_API_KEY")
+    ProviderRegistry(repository, SecretStore(None), local_again).ensure_environment_profiles()
+    assert repository.get_provider_defaults()["ai"]["adapter"] == "local_rule"
+
+
 def test_external_connection_verifies_auth_model_and_declared_text_capability(
     tmp_path, monkeypatch
 ):

@@ -35,6 +35,7 @@ services:
       KNOWLEDGEDEBT_AI_MODEL: ${KNOWLEDGEDEBT_AI_MODEL:-gpt-5-mini}
       KNOWLEDGEDEBT_ASR_MODEL: ${KNOWLEDGEDEBT_ASR_MODEL:-gpt-4o-mini-transcribe}
       KNOWLEDGEDEBT_EMBEDDING_MODEL: ${KNOWLEDGEDEBT_EMBEDDING_MODEL:-text-embedding-3-small}
+      KNOWLEDGEDEBT_AUTO_TRANSCRIBE: ${KNOWLEDGEDEBT_AUTO_TRANSCRIBE:-true}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       KNOWLEDGEDEBT_STORAGE_PROVIDER: ${KNOWLEDGEDEBT_STORAGE_PROVIDER:-local}
@@ -74,7 +75,8 @@ services:
     depends_on:
       - backend
     ports:
-      - "3000:3000"
+      # 自托管默认向局域网开放 Web；API 仍固定只发布到服务器回环地址。
+      - "${KNOWLEDGEDEBT_WEB_BIND_ADDRESS:-0.0.0.0}:${KNOWLEDGEDEBT_WEB_PORT:-3000}:3000"
     cpus: 0.5
     mem_limit: 512m
 

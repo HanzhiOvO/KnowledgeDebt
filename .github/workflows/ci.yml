@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "codex/**"]
   pull_request:
 
 jobs:
@@ -56,6 +56,67 @@ jobs:
           KNOWLEDGEDEBT_DATABASE_URL: postgresql://knowledgedebt:test-password@127.0.0.1:5432/knowledgedebt
       - run: python -m pytest -q
         working-directory: backend
+
+  compose-server:
+    runs-on: ubuntu-latest
+    env:
+      POSTGRES_PASSWORD: ci-postgres-password
+      KNOWLEDGEDEBT_ACCESS_TOKEN: ci-backend-access-token
+      KNOWLEDGEDEBT_WEB_BIND_ADDRESS: 127.0.0.1
+      KNOWLEDGEDEBT_WEB_PORT: "3000"
+    steps:
+      - uses: actions/checkout@v4
+      - name: 校验 Compose 配置
+        run: docker compose config --quiet
+      - name: 构建并启动寝室服务器栈
+        run: docker compose up --build --detach
+      - name: 验证 Web 与同源 API
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:3000/api/backend/health; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose ps
+          docker compose logs web backend database
+          exit 1
+      - name: 验证 API 未向非回环地址发布
+        run: |
+          published="$(docker compose port backend 8123)"
+          test "$published" = "127.0.0.1:8123"
+      - name: 输出失败日志并停止服务
+        if: always()
+        run: |
+          docker compose ps
+          docker compose logs --tail 100 web backend database
+          docker compose down --volumes
+
+  windows-server-script:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 解析 PowerShell 脚本
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($path in @("server.ps1", "start.ps1")) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+            ) > $null
+            if ($errors.Count) {
+              $errors | ForEach-Object { Write-Error $_ }
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }
+      - name: 验证 Windows 服务器帮助入口
+        shell: powershell
+        run: .\server.ps1 help
 
   legacy-flutter:
     runs-on: ubuntu-latest

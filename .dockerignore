@@ -10,6 +10,13 @@
 **/node_modules
 **/.next
 **/data
+.cache
+.npm-cache
+build
+dist
+outputs
+packaging
+tmp
 
 # 生产镜像不需要的历史客户端与截图
 legacy

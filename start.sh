@@ -7,6 +7,8 @@ PYTHON_BIN="${PYTHON_BIN:-}"
 export npm_config_cache="${npm_config_cache:-$PROJECT_DIR/.npm-cache}"
 OPEN_BROWSER=1
 SKIP_INSTALL=0
+LAN_MODE=0
+WEB_HOST="127.0.0.1"
 
 usage() {
   cat <<'EOF'
@@ -16,6 +18,7 @@ usage() {
   ./start.sh [选项]
 
 选项：
+  --lan           允许同一局域网 / 校园网内的设备访问 Web（仅开放 3000）
   --no-browser    服务启动后不自动打开浏览器
   --skip-install  跳过依赖检查与安装
   -h, --help      显示帮助
@@ -99,9 +102,29 @@ open_browser_when_ready() {
   printf '\n服务仍在启动，请稍后手动打开 http://localhost:3000\n'
 }
 
+detect_lan_ip() {
+  local detected=""
+  if command -v ip >/dev/null 2>&1; then
+    detected="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (index = 1; index <= NF; index += 1) if ($index == "src") {print $(index + 1); exit}}')"
+  elif command -v route >/dev/null 2>&1 && command -v ipconfig >/dev/null 2>&1; then
+    local interface_name
+    interface_name="$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')"
+    [[ -n "$interface_name" ]] && detected="$(ipconfig getifaddr "$interface_name" 2>/dev/null || true)"
+    if [[ -z "$detected" ]]; then
+      for interface_name in en0 en1; do
+        detected="$(ipconfig getifaddr "$interface_name" 2>/dev/null || true)"
+        [[ -n "$detected" ]] && break
+      done
+    fi
+  elif command -v hostname >/dev/null 2>&1; then
+    detected="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  fi
+  printf '%s' "$detected"
+}
+
 clear_stale_next_lock() {
   local lock_file="$PROJECT_DIR/web/.next/dev/lock"
-  [[ -f "$lock_file" ]] || return
+  [[ -f "$lock_file" ]] || return 0
   local lock_pid lock_command
   lock_pid="$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$lock_file" | head -n 1)"
   lock_command="$(test -n "$lock_pid" && ps -p "$lock_pid" -o command= 2>/dev/null || true)"
@@ -117,6 +140,10 @@ for argument in "$@"; do
   case "$argument" in
     --no-browser)
       OPEN_BROWSER=0
+      ;;
+    --lan)
+      LAN_MODE=1
+      WEB_HOST="0.0.0.0"
       ;;
     --skip-install)
       SKIP_INSTALL=1
@@ -192,6 +219,16 @@ fi
 
 printf '\n正在启动知债（KnowledgeDebt）……\n'
 printf 'Web：http://localhost:3000\nAPI：http://127.0.0.1:8123\n按 Ctrl+C 可同时停止服务。\n\n'
+if (( LAN_MODE == 1 )); then
+  LAN_IP="$(detect_lan_ip)"
+  if [[ -n "$LAN_IP" ]]; then
+    printf '校园网访问地址：http://%s:3000\n' "$LAN_IP"
+  else
+    printf '校园网访问地址：http://<这台电脑的局域网 IPv4>:3000\n'
+  fi
+  printf '已仅向局域网开放 Web 3000；API 8123 仍只允许本机访问。\n'
+  printf '请只在防火墙中放行 TCP 3000，不要放行 8123。\n\n'
+fi
 
 if (( OPEN_BROWSER == 1 )); then
   open_browser_when_ready &
@@ -211,9 +248,9 @@ stop_services() {
 }
 
 trap stop_services INT TERM EXIT
-(cd backend && ../.venv/bin/uvicorn app.main:app --reload --port 8123) &
+(cd backend && ../.venv/bin/uvicorn app.main:app --reload --host 127.0.0.1 --port 8123) &
 API_PID=$!
-(cd web && npm run dev -- --hostname 127.0.0.1) &
+(cd web && npm run dev -- --hostname "$WEB_HOST") &
 WEB_PID=$!
 
 while kill -0 "$API_PID" >/dev/null 2>&1 && kill -0 "$WEB_PID" >/dev/null 2>&1; do

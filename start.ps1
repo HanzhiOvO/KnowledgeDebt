@@ -2,6 +2,7 @@
 param(
     [switch]$NoBrowser,
     [switch]$SkipInstall,
+    [switch]$Lan,
     [switch]$Help
 )
 
@@ -60,9 +61,22 @@ function Stop-Tree($process) {
     }
 }
 
+function Get-LanAddress {
+    try {
+        return Get-NetIPConfiguration |
+            Where-Object { $_.IPv4DefaultGateway -and $_.NetAdapter.Status -eq "Up" } |
+            ForEach-Object { $_.IPv4Address.IPAddress } |
+            Where-Object { $_ -and $_ -notlike "169.254.*" } |
+            Select-Object -First 1
+    } catch {
+        return $null
+    }
+}
+
 if ($Help) {
     Write-Host "知债 KnowledgeDebt - Windows 一键启动"
-    Write-Host "用法: start.bat [-NoBrowser] [-SkipInstall]"
+    Write-Host "用法: start.bat [-Lan] [-NoBrowser] [-SkipInstall]"
+    Write-Host "  -Lan 允许同一局域网 / 校园网内的设备访问 Web（仅开放 3000）"
     exit 0
 }
 
@@ -156,6 +170,17 @@ if (-not $SkipInstall) {
 Write-Step "正在启动知债（KnowledgeDebt）……"
 Write-Host "Web: http://localhost:3000"
 Write-Host "API: http://127.0.0.1:8123"
+$webHost = if ($Lan) { "0.0.0.0" } else { "127.0.0.1" }
+if ($Lan) {
+    $lanAddress = Get-LanAddress
+    if ($lanAddress) {
+        Write-Host "校园网访问地址: http://${lanAddress}:3000" -ForegroundColor Green
+    } else {
+        Write-Host "校园网访问地址: http://<这台电脑的局域网 IPv4>:3000" -ForegroundColor Yellow
+    }
+    Write-Host "已仅向局域网开放 Web 3000；API 8123 仍只允许本机访问。"
+    Write-Host "请只在防火墙中放行 TCP 3000，不要放行 8123。" -ForegroundColor Yellow
+}
 Write-Host "日志: start-api.log / start-web.log"
 Write-Host "按 Ctrl+C 可同时停止服务。"
 
@@ -163,14 +188,14 @@ $api = $null
 $web = $null
 try {
     $api = Start-Process -FilePath $venvPython `
-        -ArgumentList @("-m", "uvicorn", "app.main:app", "--reload", "--port", "8123") `
+        -ArgumentList @("-m", "uvicorn", "app.main:app", "--reload", "--host", "127.0.0.1", "--port", "8123") `
         -WorkingDirectory (Join-Path $root "backend") `
         -RedirectStandardOutput (Join-Path $root "start-api.log") `
         -RedirectStandardError (Join-Path $root "start-api.error.log") `
         -PassThru -WindowStyle Hidden
 
     $web = Start-Process -FilePath "cmd.exe" `
-        -ArgumentList @("/c", "npm run dev -- --hostname 127.0.0.1") `
+        -ArgumentList @("/c", "npm run dev -- --hostname $webHost") `
         -WorkingDirectory (Join-Path $root "web") `
         -RedirectStandardOutput (Join-Path $root "start-web.log") `
         -RedirectStandardError (Join-Path $root "start-web.error.log") `

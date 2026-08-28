@@ -1,4 +1,4 @@
-.PHONY: help start dev backend-install backend-run backend-test backend-lint migrate web-install web-run web-test legacy-client-get legacy-client-run legacy-client-test compose-up compose-down verify smoke-local-asr native-macos
+.PHONY: help start server server-stop dev backend-install backend-run backend-test backend-lint migrate web-install web-run web-test legacy-client-get legacy-client-run legacy-client-test compose-up compose-down verify smoke-local-asr native-macos
 
 MEDIA ?=
 SECONDS ?= 60
@@ -6,6 +6,8 @@ SECONDS ?= 60
 help:
 	@echo "知债 KnowledgeDebt 常用命令"
 	@echo "  make start           自动补齐依赖并同时启动 Web 与 API"
+	@echo "  make server          以 Docker 持久运行并向校园网开放 Web"
+	@echo "  make server-stop     停止服务器容器（保留数据卷）"
 	@echo "  make dev             使用现有依赖同时启动 FastAPI 与 Next.js"
 	@echo "  make verify          运行后端检查、测试与 Web 生产构建"
 	@echo "  make backend-test    运行 Pytest"
@@ -17,6 +19,12 @@ help:
 
 start:
 	./start.sh
+
+server:
+	./server.sh
+
+server-stop:
+	./server.sh stop
 
 dev:
 	@$(MAKE) -j2 backend-run web-run

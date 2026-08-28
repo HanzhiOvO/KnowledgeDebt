@@ -337,9 +337,34 @@ class ProviderRegistry:
     def ensure_environment_profiles(self) -> None:
         profiles = self.repository.list_provider_profiles()
 
-        def ensure(match: Callable[[dict[str, Any]], bool], values: dict[str, Any]) -> dict[str, Any]:
+        def ensure(
+            match: Callable[[dict[str, Any]], bool],
+            values: dict[str, Any],
+            *,
+            refresh_existing: bool = False,
+        ) -> dict[str, Any]:
             existing = next((profile for profile in profiles if match(profile)), None)
             if existing is not None:
+                if refresh_existing:
+                    refreshable = {
+                        "name",
+                        "vendor",
+                        "base_url",
+                        "credential_reference",
+                        "default_model",
+                        "capabilities",
+                        "external",
+                        "enabled",
+                    }
+                    changes = {
+                        key: value
+                        for key, value in values.items()
+                        if key in refreshable and existing.get(key) != value
+                    }
+                    if changes:
+                        existing = self.repository.update_provider_profile(
+                            existing["id"], changes
+                        )
                 return existing
             created = self.repository.create_provider_profile(values)
             profiles.append(created)
@@ -371,6 +396,7 @@ class ProviderRegistry:
                 "capabilities": ["structured_generation", "chat_analysis"],
                 "external": True,
             },
+            refresh_existing=True,
         )
         asr = ensure(
             lambda item: item.get("name") == "环境变量 · ASR",
@@ -384,6 +410,7 @@ class ProviderRegistry:
                 "capabilities": ["audio_transcription", "segment_timestamps"],
                 "external": True,
             },
+            refresh_existing=True,
         )
         embedding = ensure(
             lambda item: item.get("adapter") == "hash",
@@ -411,13 +438,18 @@ class ProviderRegistry:
             },
         )
         defaults = self.repository.get_provider_defaults()
+        environment_ai_ready = bool(
+            self.settings.api_key or self.secrets.resolve(None, "env:OPENAI_API_KEY")
+        )
+        use_environment_ai = environment_ai_ready and self.settings.ai_provider != "local_rule"
         if "ai" not in defaults:
-            environment_ai_ready = bool(
-                self.settings.api_key or self.secrets.resolve(None, "env:OPENAI_API_KEY")
-            )
             self.repository.set_provider_default(
-                "ai", ai["id"] if environment_ai_ready else local_ai["id"]
+                "ai", ai["id"] if use_environment_ai else local_ai["id"]
             )
+        elif use_environment_ai and defaults["ai"].get("adapter") == "local_rule":
+            self.repository.set_provider_default("ai", ai["id"])
+        elif not use_environment_ai and defaults["ai"].get("id") == ai["id"]:
+            self.repository.set_provider_default("ai", local_ai["id"])
         if "asr" not in defaults:
             # 本地 whisper.cpp 就绪时优先本地转写：不外发、无需逐次授权。
             self.repository.set_provider_default(

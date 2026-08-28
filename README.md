@@ -77,6 +77,35 @@ Windows 10/11 可在仓库根目录双击 `start.bat`，或在 PowerShell 中执
 
 三种源码入口都只监听本机回环地址，不会默认把开发服务暴露给同一局域网的其他设备。
 
+## 寝室服务器 / 校园网访问
+
+GMK G10 使用 Windows 时，只需预先安装一次 Docker Desktop。以后在仓库根目录**双击 `一键启动服务器.bat`**（等价于 `server.bat`）：脚本会自动启动 Docker Desktop，首次弹出供应商选择并隐藏输入 API Key，生成数据库安全值、申请本地子网防火墙规则、启动全部服务并打开本机页面。
+
+其他电脑、平板和手机不需要安装 KnowledgeDebt，也不需要配置 API Key，只要打开窗口中显示的 `http://GMK-G10-局域网-IP:3000`。API Key 只存在 GMK G10 的 `.env` 和后端容器环境中，不会下发给浏览器。
+
+需要更换 Key、供应商或模型时，双击 `配置AI服务.bat`（等价于 `server-configure.bat`）。当前首次向导支持 OpenCode Go、OpenAI、DeepSeek、OpenCode Zen 和自定义 OpenAI-compatible 服务。OpenCode Go 默认使用其 OpenAI-compatible 端点与 `deepseek-v4-flash`；非 OpenAI 服务只配置 AI 分析，并默认关闭不受支持的云端自动转写。
+
+Linux 服务器仍可使用：
+
+```bash
+./server.sh
+```
+
+Compose 只向局域网发布 Web 端口；FastAPI 8123 固定绑定服务器自身的 `127.0.0.1`，浏览器统一通过 Web 的同源代理访问后端。
+
+不使用 Docker 时，也可以临时运行源码局域网模式：
+
+```bash
+./start.sh --lan
+
+# Windows
+.\start.ps1 -Lan
+```
+
+防火墙只放行 TCP 3000，不要放行 8123。校园网可能启用设备隔离；如果 GMK G10 本机能打开、其他设备超时，需要检查 Windows/Linux 防火墙及校园网 AP 隔离，而不是把 API 暴露出去。完整的首次部署、开机自启、地址固定、验证和排障步骤见 [寝室服务器部署](docs/deployment.md#gmk-g10-寝室服务器与校园网访问)。
+
+> 当前是单用户自托管应用，不提供多用户账号隔离。能打开前端的设备也能操作同一份课程数据；若只希望自己的设备访问，优先使用自有路由器的私有 LAN 或 Tailscale 等私网方案，不要把 3000 端口映射到公网。
+
 长录音规范化需要 FFmpeg。脚本只检测并提示，不会擅自安装系统软件；安装方法见 [docs/ffmpeg.md](docs/ffmpeg.md)。
 
 原生安装包已内置 whisper.cpp 和 FFmpeg；源码开发或寝室服务器部署仍可自行安装运行时。完整方案见 [docs/local-asr.md](docs/local-asr.md)。源码模式不会擅自安装系统软件或自动下载模型。
@@ -144,6 +173,11 @@ packaging/macos/          原生应用、运行时固定版本、签名、冒烟
 compose.yaml            Web + API + PostgreSQL 部署栈，含可选 local-asr profile
 start.sh                自动补齐依赖并同时启动 Web 与 API
 start.ps1 / start.bat   Windows 中文一键启动（默认 SQLite，不安装实验性大模型依赖）
+server.sh               Linux/macOS 寝室服务器管理（Docker Compose，校园网 Web）
+server.ps1 / server.bat Windows 双击启动、首次 Key 向导与本地子网防火墙
+server-configure.bat     Windows 更换服务器端 AI Key、供应商或模型
+一键启动服务器.bat       面向 Windows 普通用户的中文双击入口
+配置AI服务.bat            面向 Windows 普通用户的中文重新配置入口
 ```
 
 ## 技术结构

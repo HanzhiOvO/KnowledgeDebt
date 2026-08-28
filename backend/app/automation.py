@@ -133,6 +133,7 @@ class AutomationRepository:
         self.get_provider_profile(profile_id)
         allowed = {
             "name",
+            "vendor",
             "base_url",
             "region",
             "credential_ciphertext",
@@ -154,6 +155,7 @@ class AutomationRepository:
                 updates.append(f"{key}=?")
                 params.append(int(value) if key in {"external", "enabled"} else value)
         test_relevant = {
+            "vendor",
             "base_url",
             "credential_ciphertext",
             "credential_reference",
